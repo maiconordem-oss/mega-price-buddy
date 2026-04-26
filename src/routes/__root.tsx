@@ -33,14 +33,18 @@ export const Route = createRootRoute({
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "MegaLabs Precificação" },
+      { title: "PRECIFIQ" },
       { name: "description", content: "Precificação inteligente em todos os marketplaces" },
       { name: "author", content: "MegaLabs" },
-      { property: "og:title", content: "MegaLabs Precificação" },
+      { property: "og:title", content: "PRECIFIQ" },
       { property: "og:description", content: "Precificação inteligente em todos os marketplaces" },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },
       { name: "twitter:site", content: "@Lovable" },
+      { name: "twitter:title", content: "PRECIFIQ" },
+      { name: "twitter:description", content: "Precificação inteligente em todos os marketplaces" },
+      { property: "og:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/efa945e6-4dad-4c92-ad5d-e9cf5e0e147b/id-preview-4f4e233a--8b08e896-4995-4523-b394-54f5d10d4060.lovable.app-1777207769529.png" },
+      { name: "twitter:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/efa945e6-4dad-4c92-ad5d-e9cf5e0e147b/id-preview-4f4e233a--8b08e896-4995-4523-b394-54f5d10d4060.lovable.app-1777207769529.png" },
     ],
     links: [
       {
