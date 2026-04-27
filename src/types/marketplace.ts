@@ -20,6 +20,7 @@ export interface Product {
   image: string;
   cost: number;
   shipping: number;
+  mlItemId?: string; // ID do item no Mercado Livre (ex: MLB123)
   listings: ChannelListing[];
 }
 
