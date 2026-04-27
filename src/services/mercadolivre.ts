@@ -9,17 +9,9 @@ interface MLItemDetail {
   listing_type_id: string;
   available_quantity: number;
   status: string;
-  permalink: string;
   seller_custom_field: string | null;
-  shipping: { free_shipping: boolean; mode: string };
-}
-
-function feeByListingType(t: string): number {
-  const fees: Record<string, number> = {
-    gold_pro: 16, gold_premium: 13, gold_special: 11,
-    gold: 9, silver: 6, free: 0,
-  };
-  return fees[t] ?? 11;
+  shipping: { free_shipping: boolean };
+  attributes?: Array<{ id: string; value_name?: string }>;
 }
 
 async function fetchAllItemIds(userId: string): Promise<string[]> {
@@ -45,14 +37,18 @@ async function fetchItemDetails(ids: string[]): Promise<MLItemDetail[]> {
 }
 
 function toProduct(item: MLItemDetail): Product {
+  const sku = (item.attributes || []).find((a) => a.id === "SELLER_SKU")?.value_name || item.id;
   return {
-    sku: item.seller_custom_field || item.id,
+    sku,
     name: item.title,
     image: (item.thumbnail || "").replace("http:", "https:"),
     cost: 0,
-    shipping: item.shipping?.free_shipping ? 0 : 15,
+    shipping: item.shipping?.free_shipping ? 0 : 0, // frete inserido manualmente
+    fullCost: 0,
+    stCost: 0,
     mlItemId: item.id,
-    listings: [{ channel: "ml" as const, currentPrice: item.price, fee: feeByListingType(item.listing_type_id) }],
+    listing_type_id: item.listing_type_id,
+    listings: [{ channel: "ml" as const, currentPrice: item.price, fee: item.listing_type_id === "gold_pro" ? 17 : 12 }],
   };
 }
 

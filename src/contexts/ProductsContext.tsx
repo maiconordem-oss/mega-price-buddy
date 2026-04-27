@@ -6,14 +6,29 @@ import { serverSave, serverLoad } from "@/services/ml-api";
 import { useAuth } from "./AuthContext";
 import { toast } from "sonner";
 
-const defaultParams: PricingParams = {
-  fees: { ml: 16, shopee: 14, amazon: 15, magalu: 18, tiktok: 12 },
-  tax: 8,
-  packaging: 2.5,
-  targetMargin: 25,
+const defaultTier = (commission: number) => ({
+  commission,
+  ads: 3.0,
+  returns: 5.39,
+  packaging: 0.84,
+  tax: 9.5,
+});
+
+export const defaultParams: PricingParams = {
+  tier1: defaultTier(17), // Premium
+  tier2: defaultTier(12), // Clássico
+  defaultShipping: 0,
+  defaultFull: 0,
+  defaultST: 0,
+  targetMargin: 20,
+  // legado
+  fees: { ml: 17, shopee: 14, amazon: 15, magalu: 18, tiktok: 12 },
+  tax: 9.5,
+  packaging: 0.84,
 };
 
 const PARAMS_KEY = "pricing-params";
+const PRODUCTS_KEY = "ml-products";
 
 interface Ctx {
   products: Product[];
@@ -23,6 +38,7 @@ interface Ctx {
   setParams: (p: PricingParams) => void;
   loadMLProducts: (force?: boolean) => Promise<void>;
   loadingProducts: boolean;
+  saveProductCosts: () => void;
 }
 
 const ProductsContext = createContext<Ctx | null>(null);
@@ -32,7 +48,6 @@ export function ProductsProvider({ children }: { children: ReactNode }) {
   const [products, setProductsState] = useState<Product[]>(MOCK_PRODUCTS);
   const [loadingProducts, setLoadingProducts] = useState(false);
 
-  // Params: tenta carregar do localStorage
   const [params, setParamsState] = useState<PricingParams>(() => {
     try {
       const saved = localStorage.getItem(PARAMS_KEY);
@@ -41,18 +56,40 @@ export function ProductsProvider({ children }: { children: ReactNode }) {
     return defaultParams;
   });
 
-  const setParams = (p: PricingParams) => {
+  const setParams = useCallback((p: PricingParams) => {
     setParamsState(p);
     localStorage.setItem(PARAMS_KEY, JSON.stringify(p));
     serverSave(PARAMS_KEY, p).catch(() => {});
-  };
+  }, []);
 
-  const setProducts = (p: Product[]) => setProductsState(p);
+  const setProducts = useCallback((p: Product[]) => setProductsState(p), []);
 
   const updateProduct = useCallback((sku: string, data: Partial<Product>) => {
     setProductsState((prev) =>
       prev.map((p) => (p.sku === sku ? { ...p, ...data } : p)),
     );
+  }, []);
+
+  /** Salva custos/configs de todos os produtos no servidor */
+  const saveProductCosts = useCallback(() => {
+    setProductsState((current) => {
+      const costData = current.map((p) => ({
+        sku: p.sku,
+        mlItemId: p.mlItemId,
+        cost: p.cost,
+        shipping: p.shipping,
+        fullCost: p.fullCost,
+        stCost: p.stCost,
+        promoPrice: p.promoPrice,
+        promoLocked: p.promoLocked,
+        marginTarget: p.marginTarget,
+        costLocked: p.costLocked,
+        shippingLocked: p.shippingLocked,
+        marginLocked: p.marginLocked,
+      }));
+      serverSave("product-costs", costData).catch(() => {});
+      return current;
+    });
   }, []);
 
   const loadMLProducts = useCallback(
@@ -62,12 +99,26 @@ export function ProductsProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      // Tenta cache servidor primeiro
       if (!force) {
         try {
-          const cached = await serverLoad<Product[]>("ml-products");
-          if (cached?.data) {
-            setProductsState(cached.data);
+          const cached = await serverLoad<Product[]>(PRODUCTS_KEY);
+          if (cached?.data && Array.isArray(cached.data) && cached.data.length) {
+            // Restaura custos salvos
+            const costsRaw = await serverLoad<Array<{ sku: string } & Partial<Product>>>("product-costs");
+            const costsMap: Record<string, Partial<Product>> = {};
+            if (costsRaw?.data) {
+              (costsRaw.data as Array<{ sku: string } & Partial<Product>>).forEach((c) => {
+                costsMap[c.sku] = c;
+              });
+            }
+            const merged = (cached.data as Product[]).map((p) => ({
+              ...p,
+              ...costsMap[p.sku],
+            }));
+            setProductsState(merged);
+            toast.success(`${merged.length} produtos carregados do cache`);
+            // Atualiza preços em background
+            refreshPricesBackground(merged);
             return;
           }
         } catch {}
@@ -75,21 +126,26 @@ export function ProductsProvider({ children }: { children: ReactNode }) {
 
       setLoadingProducts(true);
       try {
-        // Mescla custo/frete já editados
-        const current = products.reduce<Record<string, { cost: number; shipping: number }>>((acc, p) => {
-          acc[p.sku] = { cost: p.cost, shipping: p.shipping };
-          return acc;
-        }, {});
-
         const mlProds = await getMLProducts(userId);
+
+        // Restaura custos salvos
+        const costsRaw = await serverLoad<Array<{ sku: string } & Partial<Product>>>("product-costs");
+        const costsMap: Record<string, Partial<Product>> = {};
+        if (costsRaw?.data) {
+          (costsRaw.data as Array<{ sku: string } & Partial<Product>>).forEach((c) => {
+            costsMap[c.sku] = c;
+          });
+        }
+
         const merged = mlProds.map((p) => ({
           ...p,
-          cost: current[p.sku]?.cost ?? p.cost,
-          shipping: current[p.sku]?.shipping ?? p.shipping,
+          fullCost: 0,
+          stCost: 0,
+          ...costsMap[p.sku],
         }));
 
         setProductsState(merged);
-        serverSave("ml-products", merged).catch(() => {});
+        serverSave(PRODUCTS_KEY, merged).catch(() => {});
         toast.success(`${merged.length} produtos carregados do Mercado Livre`);
       } catch (e) {
         toast.error("Erro ao carregar produtos: " + (e as Error).message);
@@ -97,12 +153,32 @@ export function ProductsProvider({ children }: { children: ReactNode }) {
         setLoadingProducts(false);
       }
     },
-    [userId, mlConnected, products],
+    [userId, mlConnected],
   );
+
+  const refreshPricesBackground = async (current: Product[]) => {
+    try {
+      if (!userId) return;
+      const mlProds = await getMLProducts(userId);
+      setProductsState((prev) =>
+        prev.map((p) => {
+          const fresh = mlProds.find((m) => m.mlItemId === p.mlItemId);
+          if (!fresh) return p;
+          return {
+            ...p,
+            listings: fresh.listings,
+            listing_type_id: fresh.listing_type_id,
+            name: fresh.name,
+            image: fresh.image,
+          };
+        }),
+      );
+    } catch {}
+  };
 
   return (
     <ProductsContext.Provider
-      value={{ products, setProducts, updateProduct, params, setParams, loadMLProducts, loadingProducts }}
+      value={{ products, setProducts, updateProduct, params, setParams, loadMLProducts, loadingProducts, saveProductCosts }}
     >
       {children}
     </ProductsContext.Provider>

@@ -11,24 +11,54 @@ export const CHANNELS: { id: Channel; name: string; short: string }[] = [
 export interface ChannelListing {
   channel: Channel;
   currentPrice: number;
-  fee: number; // %
+  fee: number;
 }
 
 export interface Product {
   sku: string;
   name: string;
   image: string;
-  cost: number;
-  shipping: number;
-  mlItemId?: string; // ID do item no Mercado Livre (ex: MLB123)
+  // Custos editáveis por produto
+  cost: number;       // custo do produto
+  shipping: number;   // frete/taxa de envio (fr)
+  fullCost: number;   // armazenagem full (fu)
+  stCost: number;     // imposto ST
+  // Configurações ML
+  mlItemId?: string;
+  listing_type_id?: string; // gold_pro, gold_special, etc
+  // Preço promo manual
+  promoPrice?: number;
+  promoLocked?: boolean;
+  // Margem mínima por produto (override global)
+  marginTarget?: number;
+  // Locks
+  costLocked?: boolean;
+  shippingLocked?: boolean;
+  marginLocked?: boolean;
   listings: ChannelListing[];
 }
 
+/** Parâmetros Premium (tier 1) e Clássico (tier 2) separados */
+export interface TierParams {
+  commission: number; // comissão ML %
+  ads: number;        // anúncios %
+  returns: number;    // devolução %
+  packaging: number;  // embalagem %
+  tax: number;        // imposto NF %
+}
+
 export interface PricingParams {
+  tier1: TierParams;  // Premium (gold_pro)
+  tier2: TierParams;  // Clássico (gold_special)
+  // Custos fixos padrão (editáveis por produto)
+  defaultShipping: number;
+  defaultFull: number;
+  defaultST: number;
+  targetMargin: number; // margem global padrão %
+  // Legado — mantido para compatibilidade
   fees: Record<Channel, number>;
   tax: number;
   packaging: number;
-  targetMargin: number;
 }
 
 export interface MarketplaceCredentials {
