@@ -6,16 +6,18 @@ import { HistoricoTab } from "@/components/tabs/HistoricoTab";
 import { CurvaAbcTab } from "@/components/tabs/CurvaAbcTab";
 import { AnaliseTab } from "@/components/tabs/AnaliseTab";
 import { PromocoesTab } from "@/components/tabs/PromocoesTab";
+import { SeoTab } from "@/components/tabs/SeoTab";
 import { ConfiguracoesTab } from "@/components/tabs/ConfiguracoesTab";
 
 const TABS = [
   { id: "precificacao", label: "Precificação" },
-  { id: "visitas", label: "Visitas & Vendas" },
-  { id: "historico", label: "Histórico" },
-  { id: "abc", label: "Curva ABC" },
-  { id: "analise", label: "Análise" },
-  { id: "promocoes", label: "Promoções" },
-  { id: "config", label: "Configurações" },
+  { id: "visitas",      label: "Visitas & Vendas" },
+  { id: "historico",    label: "Histórico" },
+  { id: "abc",          label: "Curva ABC" },
+  { id: "analise",      label: "Análise" },
+  { id: "promocoes",    label: "Promoções" },
+  { id: "seo",          label: "SEO" },
+  { id: "config",       label: "Configurações" },
 ];
 
 export function AppShell() {
@@ -42,6 +44,7 @@ export function AppShell() {
           <TabsContent value="abc"><CurvaAbcTab /></TabsContent>
           <TabsContent value="analise"><AnaliseTab /></TabsContent>
           <TabsContent value="promocoes"><PromocoesTab /></TabsContent>
+          <TabsContent value="seo"><SeoTab /></TabsContent>
           <TabsContent value="config"><ConfiguracoesTab /></TabsContent>
         </Tabs>
       </main>
