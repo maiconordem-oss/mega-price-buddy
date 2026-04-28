@@ -109,7 +109,7 @@ export async function refreshToken(refresh: string) {
     const body = new URLSearchParams({
       grant_type: 'refresh_token', client_id: ML_CLIENT_ID, refresh_token: refresh,
     })
-    const res = await fetch(`${ML_AUTH_BASE}/jms/oauth/token`, {
+    const res = await fetch(`${ML_API_BASE}/oauth/token`, {
       method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body,
     })
     const json = await res.json() as Record<string, unknown>
