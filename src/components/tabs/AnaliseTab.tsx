@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { ml, serverSave, serverLoad, BRL } from "@/services/ml-api";
 import { useProducts } from "@/contexts/ProductsContext";
 import { useAuth } from "@/contexts/AuthContext";
+import { useShopReset } from "@/hooks/useShopReset";
 import { toast } from "sonner";
 import { Loader2, RefreshCw, Star, Shield, TrendingUp, AlertTriangle } from "lucide-react";
 import { RadarChart, Radar, PolarGrid, PolarAngleAxis, ResponsiveContainer, Tooltip } from "recharts";
@@ -57,6 +58,10 @@ export function AnaliseTab() {
   const [items, setItems] = useState<AnaliseItem[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [loading, setLoading] = useState(false);
+
+  useShopReset(useCallback(() => {
+    setReputation(null); setItems([]); setLoaded(false);
+  }, []));
 
   const load = useCallback(
     async (force = false) => {

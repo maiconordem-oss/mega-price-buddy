@@ -14,29 +14,30 @@ import { proxyPost } from "@/services/ml-api";
 import { toast } from "sonner";
 import type { Product } from "@/types/marketplace";
 
-// Limite de aumento acumulado: 5% em 7 dias (igual ao precif.html)
-const PRICE_HIST_KEY = (id: string) => `price-hist-${id}`;
-function getPriceHistory7d(itemId: string) {
+// Limite de aumento acumulado: 5% em 7 dias — namespace por shopId para não misturar contas
+const PRICE_HIST_KEY = (shopId: string, itemId: string) => `price-hist:${shopId}:${itemId}`;
+function getPriceHistory7d(shopId: string, itemId: string) {
   try {
-    const raw = localStorage.getItem(PRICE_HIST_KEY(itemId));
+    const raw = localStorage.getItem(PRICE_HIST_KEY(shopId, itemId));
     if (!raw) return [];
     const arr: Array<{ ts: number; pct: number }> = JSON.parse(raw);
     const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
     return arr.filter((e) => e.ts >= cutoff);
   } catch { return []; }
 }
-function getAccumulated7d(itemId: string) {
-  return getPriceHistory7d(itemId).reduce((s, e) => s + e.pct, 0);
+function getAccumulated7d(shopId: string, itemId: string) {
+  return getPriceHistory7d(shopId, itemId).reduce((s, e) => s + e.pct, 0);
 }
-function savePriceIncrease(itemId: string, pct: number) {
-  const hist = getPriceHistory7d(itemId);
+function savePriceIncrease(shopId: string, itemId: string, pct: number) {
+  const hist = getPriceHistory7d(shopId, itemId);
   hist.push({ ts: Date.now(), pct });
-  localStorage.setItem(PRICE_HIST_KEY(itemId), JSON.stringify(hist));
+  localStorage.setItem(PRICE_HIST_KEY(shopId, itemId), JSON.stringify(hist));
 }
 
 export function PrecificacaoTab() {
   const { params, setParams, products, updateProduct, loadMLProducts, loadingProducts, saveProductCosts } = useProducts();
-  const { userId } = useAuth();
+  const { userId, currentShop } = useAuth();
+  const shopId = currentShop?.id ?? "default";
   const [paramsOpen, setParamsOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState<"" | "low" | "ok" | "nocost">("");
@@ -105,7 +106,7 @@ export function PrecificacaoTab() {
     const itemId = product.mlItemId;
     if (!itemId) { toast.error("ID ML não disponível"); return; }
 
-    const used = getAccumulated7d(itemId);
+    const used = getAccumulated7d(shopId, itemId);
     const remaining = 5 - used;
     if (remaining <= 0) { toast.error("Limite de 5% em 7 dias atingido. Aguarde o período resetar."); return; }
 
@@ -118,7 +119,7 @@ export function PrecificacaoTab() {
     setUpdatingIds((prev) => new Set(prev).add(itemId));
     try {
       await proxyPost("PUT", `/items/${itemId}`, { price: newPrice });
-      savePriceIncrease(itemId, actualPct);
+      savePriceIncrease(shopId, itemId, actualPct);
       updateProduct(product.sku, {
         listings: product.listings.map((l) =>
           l.channel === "ml" ? { ...l, currentPrice: newPrice } : l,
@@ -368,7 +369,7 @@ export function PrecificacaoTab() {
                   ...(showItems ? items : []).map(({ product: p, row: r }) => {
                 const itemId = p.mlItemId || p.sku;
                 const isUpdating = updatingIds.has(itemId) || updatingIds.has(itemId + "ideal");
-                const used7d = p.mlItemId ? getAccumulated7d(p.mlItemId) : 0;
+                const used7d = p.mlItemId ? getAccumulated7d(shopId, p.mlItemId) : 0;
                 const limitReached = used7d >= 5;
                 const mlPrice = p.listings.find((l) => l.channel === "ml")?.currentPrice ?? 0;
                 const listingType = p.listing_type_id || "";

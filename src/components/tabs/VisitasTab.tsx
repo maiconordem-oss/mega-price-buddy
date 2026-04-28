@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -28,7 +28,8 @@ const AUTO_MS   = 15 * 60 * 1000;
 
 export function VisitasTab() {
   const { products } = useProducts();
-  const { userId } = useAuth();
+  const { userId, currentShop } = useAuth();
+  const shopId = currentShop?.id ?? "default";
   const [data, setData]       = useState<VisitItem[]>([]);
   const [loaded, setLoaded]   = useState(false);
   const [loading, setLoading] = useState(false);
@@ -36,6 +37,11 @@ export function VisitasTab() {
   const [days, setDays]       = useState(30);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   const loadingRef = useRef(false);
+
+  // Reset ao trocar de conta
+  useEffect(() => {
+    setData([]); setLoaded(false); setLastUpdate(null);
+  }, [shopId]);
 
   const load = useCallback(async (force = false) => {
     if (!products.length || !userId) return;

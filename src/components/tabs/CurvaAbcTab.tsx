@@ -6,6 +6,7 @@ import { ml, serverSave, serverLoad, toMLDate, chunks, fetchAllOrders, BRL } fro
 import { useProducts } from "@/contexts/ProductsContext";
 import { useAuth } from "@/contexts/AuthContext";
 import { useAutoRefresh } from "@/hooks/useAutoRefresh";
+import { useShopReset } from "@/hooks/useShopReset";
 import { toast } from "sonner";
 import { Loader2, RefreshCw, Clock } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from "recharts";
@@ -31,6 +32,10 @@ export function CurvaAbcTab() {
   const [days, setDays]       = useState(30);
   const [mode, setMode]       = useState<"revenue"|"qty"|"visits">("revenue");
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+
+  useShopReset(useCallback(() => {
+    setData([]); setLoaded(false); setLastUpdate(null);
+  }, []));
   const loadingRef = useRef(false);
 
   const load = useCallback(async (force = false) => {

@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { ml, proxyPost, serverSave, serverLoad, BRL } from "@/services/ml-api";
 import { useProducts } from "@/contexts/ProductsContext";
 import { useAuth } from "@/contexts/AuthContext";
+import { useShopReset } from "@/hooks/useShopReset";
 import { toast } from "sonner";
 import { Loader2, RefreshCw, Search, Tag, Check, X } from "lucide-react";
 
@@ -55,6 +56,10 @@ export function PromocoesTab() {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<"all" | "invites" | "active">("invites");
   const [actingIds, setActingIds] = useState<Set<string>>(new Set());
+
+  useShopReset(useCallback(() => {
+    setData([]); setLoaded(false);
+  }, []));
 
   const load = useCallback(
     async (force = false) => {

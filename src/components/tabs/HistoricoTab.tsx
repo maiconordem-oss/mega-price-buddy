@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { fetchAllOrders, serverSave, serverLoad, toMLDate, BRL } from "@/services/ml-api";
 import { useAuth } from "@/contexts/AuthContext";
 import { useAutoRefresh } from "@/hooks/useAutoRefresh";
+import { useShopReset } from "@/hooks/useShopReset";
 import { toast } from "sonner";
 import { Loader2, Search, RefreshCw, Package, Clock } from "lucide-react";
 
@@ -43,6 +44,10 @@ export function HistoricoTab() {
   const [lastUpdate, setLastUpdate]     = useState<Date | null>(null);
   const [totalFetched, setTotalFetched] = useState(0);
   const loadingRef = useRef(false);
+
+  useShopReset(useCallback(() => {
+    setOrders([]); setLoaded(false); setLastUpdate(null); setTotalFetched(0);
+  }, []));
 
   const load = useCallback(async (force = false) => {
     if (!userId) return;
