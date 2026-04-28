@@ -1,11 +1,6 @@
 /**
  * AnalyticsContext — busca centralizada de visitas + pedidos (90 dias)
- *
- * Busca UMA VEZ e compartilha com todas as abas:
- * - VisitasTab    → filtra visitMap + orderMap pelo período escolhido
- * - CurvaAbcTab   → mesmo dado, classificação ABC local
- * - HistoricoTab  → usa allOrders (paid) + busca própria para outros status
- * - AnaliseTab    → usa orderMap para margens (reputação busca separado, é leve)
+ * Cache persistente: 6h no localStorage. Nunca rebusca sem necessidade.
  */
 
 import {
@@ -21,53 +16,39 @@ import { toast } from 'sonner'
 // ── Tipos públicos ────────────────────────────────────────────────────────────
 
 export interface OrderItem {
-  mlItemId: string   // "MLB123..."
-  quantity: number
+  mlItemId:  string
+  quantity:  number
   unitPrice: number
-  title: string
+  title:     string
 }
 
 export interface Order {
-  id: number
-  dateCreated: string   // ISO
-  buyerNickname: string
-  total: number
-  status: string
-  items: OrderItem[]
+  id:             number
+  dateCreated:    string
+  buyerNickname:  string
+  total:          number
+  status:         string
+  items:          OrderItem[]
 }
 
-export interface VisitData {
-  [mlItemId: string]: number   // total de visitas nos 90 dias
-}
-
-export interface OrderData {
-  [mlItemId: string]: { qty: number; revenue: number }
-}
-
-// ── Context ───────────────────────────────────────────────────────────────────
+export interface VisitData  { [mlItemId: string]: number }
+export interface OrderData  { [mlItemId: string]: { qty: number; revenue: number } }
 
 interface Ctx {
-  // dados brutos
-  visitMap:  VisitData        // visitas por item (90 dias)
-  orderMap:  OrderData        // vendas por item (90 dias, status=paid)
-  allOrders: Order[]          // todos os pedidos (90 dias, status=paid)
-
-  // estado
+  visitMap:  VisitData
+  orderMap:  OrderData
+  allOrders: Order[]
   loading:   boolean
   loaded:    boolean
   lastFetch: Date | null
-  fetchedAt: string | null    // ISO — para abas calcularem "age"
-
-  // ação
-  load: (force?: boolean) => Promise<void>
+  load:      (force?: boolean) => Promise<void>
 }
 
 const AnalyticsContext = createContext<Ctx | null>(null)
 
 // ── Cache ─────────────────────────────────────────────────────────────────────
-
 const CACHE_KEY = 'analytics-90d'
-const CACHE_TTL = 120  // minutos
+const CACHE_TTL = 360  // 6 horas em minutos
 
 interface CachePayload {
   visitMap:  VisitData
@@ -77,7 +58,6 @@ interface CachePayload {
 }
 
 // ── Provider ──────────────────────────────────────────────────────────────────
-
 export function AnalyticsProvider({ children }: { children: ReactNode }) {
   const { userId, mlConnected } = useAuth()
   const { products } = useProducts()
@@ -88,46 +68,56 @@ export function AnalyticsProvider({ children }: { children: ReactNode }) {
   const [loading,   setLoading]   = useState(false)
   const [loaded,    setLoaded]    = useState(false)
   const [lastFetch, setLastFetch] = useState<Date | null>(null)
-  const [fetchedAt, setFetchedAt] = useState<string | null>(null)
-  const loadingRef = useRef(false)
+  const loadingRef  = useRef(false)
+  const initDoneRef = useRef(false)  // garante que auto-load roda só uma vez por sessão
 
-  // Reset ao trocar de conta
   useShopReset(useCallback(() => {
     setVisitMap({}); setOrderMap({}); setAllOrders([])
-    setLoaded(false); setLastFetch(null); setFetchedAt(null)
+    setLoaded(false); setLastFetch(null)
+    initDoneRef.current = false
   }, []))
 
-  // ── apply payload ────────────────────────────────────────────────────────
   function applyPayload(p: CachePayload) {
     setVisitMap(p.visitMap)
     setOrderMap(p.orderMap)
     setAllOrders(p.allOrders)
-    setFetchedAt(p.fetchedAt)
     setLastFetch(new Date(p.fetchedAt))
     setLoaded(true)
   }
 
-  // ── load ─────────────────────────────────────────────────────────────────
+  // ── Verifica cache sem fazer fetch ────────────────────────────────────────
+  async function tryCache(): Promise<boolean> {
+    try {
+      const cached = await serverLoad<CachePayload>(CACHE_KEY)
+      if (!cached?.data || !cached?.ts) return false
+      const ageMin = (Date.now() - new Date(cached.ts).getTime()) / 60000
+      if (ageMin >= CACHE_TTL) return false
+      applyPayload(cached.data)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  // ── Fetch completo da API ─────────────────────────────────────────────────
   const load = useCallback(async (force = false) => {
     if (!mlConnected || !userId) {
       toast.info('Conecte o Mercado Livre para carregar os dados.')
       return
     }
     if (loadingRef.current) return
-    if (!force && loaded) return  // já carregado em memória
 
-    // tentar cache localStorage (2h)
+    // Sem force: tenta memória, depois cache, depois busca
     if (!force) {
-      try {
-        const cached = await serverLoad<CachePayload>(CACHE_KEY)
-        if (cached?.data && cached?.ts) {
-          const age = (Date.now() - new Date(cached.ts).getTime()) / 60000
-          if (age < CACHE_TTL) {
-            applyPayload(cached.data)
-            return
-          }
-        }
-      } catch {}
+      if (loaded) return                    // já em memória, não faz nada
+      const hit = await tryCache()
+      if (hit) return                       // cache válido, carregou do localStorage
+    }
+
+    const mlItems = products.filter(p => p.mlItemId)
+    if (!mlItems.length) {
+      toast.info('Carregue os produtos do ML primeiro.')
+      return
     }
 
     loadingRef.current = true
@@ -135,19 +125,14 @@ export function AnalyticsProvider({ children }: { children: ReactNode }) {
 
     try {
       const now      = new Date()
-      const from90   = new Date(now.getTime() - 90 * 86400000)
-      const dateFrom = toMLDate(from90)
+      const dateFrom = toMLDate(new Date(now.getTime() - 90 * 86400000))
       const dateTo   = toMLDate(now)
+      const itemIds  = mlItems.map(p => p.mlItemId!)
 
-      const mlItems = products.filter(p => p.mlItemId)
-      if (!mlItems.length) {
-        toast.info('Carregue os produtos do ML primeiro.')
-        return
-      }
-      const itemIds = mlItems.map(p => p.mlItemId!)
-
-      // ── 1. Visitas: 1 item por request, paralelo em lotes de 8 ───────────
-      toast.loading('Buscando visitas...', { id: 'analytics' })
+      // ── 1. Visitas ────────────────────────────────────────────────────────
+      // A API /visits/items retorna ARRAY: [{ item_id: "MLB...", total_visits: N }, ...]
+      // Aceita apenas 1 id por request
+      toast.loading(`Buscando visitas (${itemIds.length} produtos)...`, { id: 'analytics' })
       const newVisitMap: VisitData = {}
 
       for (const batch of chunks(itemIds, 8)) {
@@ -155,63 +140,81 @@ export function AnalyticsProvider({ children }: { children: ReactNode }) {
           try {
             const res = await ml(
               `/visits/items?ids=${id}&date_from=${encodeURIComponent(dateFrom)}&date_to=${encodeURIComponent(dateTo)}`,
-            ) as Record<string, { total_visits: number }>
-            newVisitMap[id] = res[id]?.total_visits || 0
+            )
+            // Resposta pode ser array OU objeto dependendo da versão da API
+            if (Array.isArray(res)) {
+              // formato array: [{ item_id: "MLB123", total_visits: 42 }]
+              const found = (res as Array<{ item_id: string; total_visits: number }>)
+                .find(r => r.item_id === id)
+              newVisitMap[id] = found?.total_visits || 0
+            } else {
+              // formato objeto: { "MLB123": { total_visits: 42 } }
+              const obj = res as Record<string, { total_visits?: number } | number>
+              const val = obj[id]
+              newVisitMap[id] = typeof val === 'number'
+                ? val
+                : (val as { total_visits?: number })?.total_visits || 0
+            }
           } catch {
             newVisitMap[id] = 0
           }
         }))
-        await new Promise(r => setTimeout(r, 150))
+        await new Promise(r => setTimeout(r, 200))
       }
 
-      // ── 2. Pedidos (90 dias, status=paid) ────────────────────────────────
-      toast.loading('Buscando pedidos...', { id: 'analytics' })
+      // ── 2. Pedidos ────────────────────────────────────────────────────────
+      toast.loading('Buscando pedidos (90 dias)...', { id: 'analytics' })
 
-      type RawOI    = { item: { id: string; title?: string }; quantity: number; unit_price: number }
+      type RawOI = {
+        item:       { id: string | number; title?: string }
+        quantity:   number
+        unit_price: number
+      }
       type RawOrder = {
-        id: number
+        id:           number
         date_created: string
-        buyer: { nickname: string }
+        buyer:        { nickname: string }
         total_amount: number
-        status: string
-        order_items: RawOI[]
+        status:       string
+        order_items:  RawOI[]
       }
 
       const raw = await fetchAllOrders(userId, 'paid', dateFrom, 40) as RawOrder[]
 
-      const newOrderMap: OrderData = {}
-      const newAllOrders: Order[] = raw.map(o => {
+      const newOrderMap: OrderData  = {}
+      const newAllOrders: Order[]   = raw.map(o => {
         const items: OrderItem[] = (o.order_items || []).map(oi => {
           const rawId = oi.item?.id
-          const id    = rawId ? (String(rawId).startsWith('MLB') ? String(rawId) : `MLB${rawId}`) : ''
+          const id    = rawId
+            ? (String(rawId).startsWith('MLB') ? String(rawId) : `MLB${rawId}`)
+            : ''
           if (id) {
             newOrderMap[id] = newOrderMap[id] || { qty: 0, revenue: 0 }
-            newOrderMap[id].qty     += Number(oi.quantity) || 0
+            newOrderMap[id].qty     += Number(oi.quantity)   || 0
             newOrderMap[id].revenue += (Number(oi.quantity) || 0) * (Number(oi.unit_price) || 0)
           }
           return {
             mlItemId:  id,
-            quantity:  Number(oi.quantity) || 0,
+            quantity:  Number(oi.quantity)   || 0,
             unitPrice: Number(oi.unit_price) || 0,
             title:     oi.item?.title || '',
           }
         })
         return {
-          id:              o.id,
-          dateCreated:     o.date_created,
-          buyerNickname:   o.buyer?.nickname || '',
-          total:           Number(o.total_amount) || 0,
-          status:          o.status,
+          id:            o.id,
+          dateCreated:   o.date_created,
+          buyerNickname: o.buyer?.nickname || '',
+          total:         Number(o.total_amount) || 0,
+          status:        o.status,
           items,
         }
       })
 
-      const fetchedAt = new Date().toISOString()
       const payload: CachePayload = {
         visitMap:  newVisitMap,
         orderMap:  newOrderMap,
         allOrders: newAllOrders,
-        fetchedAt,
+        fetchedAt: new Date().toISOString(),
       }
 
       applyPayload(payload)
@@ -222,24 +225,27 @@ export function AnalyticsProvider({ children }: { children: ReactNode }) {
         { id: 'analytics' },
       )
     } catch (e) {
-      toast.error('Erro ao carregar analytics: ' + (e as Error).message, { id: 'analytics' })
+      toast.error('Erro: ' + (e as Error).message, { id: 'analytics' })
     } finally {
       setLoading(false)
       loadingRef.current = false
     }
-  }, [userId, mlConnected, products, loaded])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId, mlConnected, products])
 
-  // Auto-carrega quando conectar ML e tiver produtos
+  // ── Auto-load: roda uma vez por sessão quando ML conecta + tem produtos ──
   useEffect(() => {
-    if (mlConnected && userId && products.length && !loaded && !loadingRef.current) {
-      load(false)
-    }
-  }, [mlConnected, userId, products.length]) // eslint-disable-line
+    if (!mlConnected || !userId || !products.length) return
+    if (initDoneRef.current) return
+    initDoneRef.current = true
+    load(false)   // vai para cache se ainda válido, senão busca
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mlConnected, userId, products.length])
 
   return (
     <AnalyticsContext.Provider value={{
       visitMap, orderMap, allOrders,
-      loading, loaded, lastFetch, fetchedAt,
+      loading, loaded, lastFetch,
       load,
     }}>
       {children}
@@ -253,15 +259,13 @@ export function useAnalytics() {
   return ctx
 }
 
-// ── Helpers públicos para as abas ─────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
-/** Filtra allOrders pelo período (dias a partir de agora) */
 export function filterOrdersByDays(orders: Order[], days: number): Order[] {
   const cutoff = Date.now() - days * 86400000
   return orders.filter(o => new Date(o.dateCreated).getTime() >= cutoff)
 }
 
-/** Agrega orderMap a partir de lista filtrada de pedidos */
 export function buildOrderMap(orders: Order[]): OrderData {
   const map: OrderData = {}
   for (const o of orders) {
