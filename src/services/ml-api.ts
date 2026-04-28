@@ -87,7 +87,7 @@ export async function exchangeCode(code: string, codeVerifier: string) {
       grant_type: 'authorization_code', client_id: ML_CLIENT_ID,
       code, redirect_uri: ML_REDIRECT_URI, code_verifier: codeVerifier,
     })
-    const res = await fetch(`${ML_AUTH_BASE}/jms/oauth/token`, {
+    const res = await fetch(`${ML_API_BASE}/oauth/token`, {
       method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body,
     })
     const json = await res.json() as Record<string, unknown>
