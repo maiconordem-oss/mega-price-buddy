@@ -26,25 +26,38 @@ export function getClientId()    { return ML_CLIENT_ID    }
 export function getRedirectUri() { return ML_REDIRECT_URI }
 export function getAuthBase()    { return ML_AUTH_BASE    }
 
+// ── Endpoints que o ML libera CORS (GET direto do browser é ok) ──────────
+const CORS_ALLOWED = ['/users/', '/items?', '/items/']
+
 // ── GET à API ML ───────────────────────────────────────────────────────────
 export async function ml(path: string): Promise<unknown> {
   if (!_token) throw new Error('Não autenticado. Conecte o Mercado Livre.')
-  try {
-    // Produção: server function (Cloudflare Worker)
-    const text = await mlGet({ data: { path, access_token: _token } })
-    return JSON.parse(text)
-  } catch (serverErr) {
-    // Dev fallback: direto via CORS
-    const res = await fetch(`${ML_API_BASE}${path}`, {
-      headers: { Authorization: `Bearer ${_token}` },
-    })
-    const json: unknown = await res.json()
-    if (!res.ok) {
-      const e = json as Record<string, string>
-      throw new Error(e.message || e.error || `ML HTTP ${res.status}`)
+
+  // Endpoints com CORS bloqueado (visits, orders, seller-promotions, etc.)
+  // SEMPRE via server function — nunca direto do browser
+  const corsBlocked = !CORS_ALLOWED.some(prefix => path.includes(prefix))
+
+  if (!corsBlocked) {
+    // Tenta server function primeiro; se falhar (dev sem Workers), usa CORS direto
+    try {
+      const text = await mlGet({ data: { path, access_token: _token } })
+      return JSON.parse(text)
+    } catch {
+      const res = await fetch(`${ML_API_BASE}${path}`, {
+        headers: { Authorization: `Bearer ${_token}` },
+      })
+      const json: unknown = await res.json()
+      if (!res.ok) {
+        const e = json as Record<string, string>
+        throw new Error(e.message || e.error || `ML HTTP ${res.status}`)
+      }
+      return json
     }
-    return json
   }
+
+  // CORS bloqueado: obrigatório via server function (Cloudflare Worker)
+  const text = await mlGet({ data: { path, access_token: _token } })
+  return JSON.parse(text)
 }
 
 // ── POST/PUT/DELETE à API ML ──────────────────────────────────────────────
@@ -54,26 +67,11 @@ export async function proxyPost(
   body?: unknown,
 ): Promise<unknown> {
   if (!_token) throw new Error('Não autenticado.')
-  try {
-    const text = await mlMutate({
-      data: { method, path, access_token: _token, body: body !== undefined ? JSON.stringify(body) : undefined },
-    })
-    return JSON.parse(text)
-  } catch {
-    // Dev fallback
-    const res = await fetch(`${ML_API_BASE}${path}`, {
-      method,
-      headers: { Authorization: `Bearer ${_token}`, 'Content-Type': 'application/json' },
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-    })
-    if (res.status === 204) return { ok: true }
-    const json: unknown = await res.json()
-    if (!res.ok) {
-      const e = json as Record<string, string>
-      throw new Error(e.message || e.error || `ML HTTP ${res.status}`)
-    }
-    return json
-  }
+  // Mutações (POST/PUT/DELETE) SEMPRE via server function — ML bloqueia CORS para mutações
+  const text = await mlMutate({
+    data: { method, path, access_token: _token, body: body !== undefined ? JSON.stringify(body) : undefined },
+  })
+  return JSON.parse(text)
 }
 
 // ── Exchange code → token ─────────────────────────────────────────────────
