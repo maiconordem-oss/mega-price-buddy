@@ -1,13 +1,14 @@
-import { useState, useCallback } from "react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { useState, useCallback, useRef } from "react";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { ml, serverSave, serverLoad, toMLDate, chunks, BRL } from "@/services/ml-api";
+import { ml, serverSave, serverLoad, toMLDate, chunks, fetchAllOrders, BRL } from "@/services/ml-api";
 import { useProducts } from "@/contexts/ProductsContext";
 import { useAuth } from "@/contexts/AuthContext";
+import { useAutoRefresh } from "@/hooks/useAutoRefresh";
 import { toast } from "sonner";
-import { Eye, ShoppingCart, TrendingUp, Loader2, Search, RefreshCw } from "lucide-react";
+import { Eye, ShoppingCart, TrendingUp, Loader2, Search, RefreshCw, Clock } from "lucide-react";
 
 interface VisitItem {
   name: string;
@@ -22,146 +23,131 @@ interface VisitItem {
 }
 
 const CACHE_KEY = "visitas-vendas";
-const CACHE_TTL = 120; // 2h em minutos
+const CACHE_TTL = 120;
+const AUTO_MS   = 15 * 60 * 1000;
 
 export function VisitasTab() {
   const { products } = useProducts();
   const { userId } = useAuth();
-  const [data, setData] = useState<VisitItem[]>([]);
-  const [loaded, setLoaded] = useState(false);
+  const [data, setData]       = useState<VisitItem[]>([]);
+  const [loaded, setLoaded]   = useState(false);
   const [loading, setLoading] = useState(false);
-  const [search, setSearch] = useState("");
-  const [days, setDays] = useState(30);
+  const [search, setSearch]   = useState("");
+  const [days, setDays]       = useState(30);
+  const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+  const loadingRef = useRef(false);
 
-  const load = useCallback(
-    async (force = false) => {
-      if (!products.length) {
-        toast.info("Carregue os produtos primeiro na aba Precificação.");
-        return;
-      }
-      if (!userId) {
-        toast.info("Conecte o Mercado Livre nas Configurações.");
-        return;
-      }
+  const load = useCallback(async (force = false) => {
+    if (!products.length || !userId) return;
+    if (loadingRef.current) return;
 
-      if (!force && loaded) return;
-
-      // Cache
-      if (!force) {
-        try {
-          const cached = await serverLoad<VisitItem[]>(CACHE_KEY);
-          if (cached?.data && cached?.ts) {
-            const age = (Date.now() - new Date(cached.ts).getTime()) / 60000;
-            if (age < CACHE_TTL) {
-              setData(cached.data);
-              setLoaded(true);
-              return;
-            }
-          }
-        } catch {}
-      }
-
-      setLoading(true);
+    if (!force) {
       try {
-        const now = new Date();
-        const from = new Date(now.getTime() - days * 86400000);
-        const dateFrom = toMLDate(from);
-        const dateTo = toMLDate(now);
-
-        // Pega só produtos ML
-        const mlItems = products.filter((p) => p.mlItemId);
-        if (!mlItems.length) {
-          toast.warning("Nenhum produto do ML carregado.");
-          setLoading(false);
-          return;
-        }
-
-        const itemIds = mlItems.map((p) => p.mlItemId!);
-
-        // Visitas em lotes de 50
-        const visitBatches = chunks(itemIds, 50);
-        const visitMap: Record<string, number> = {};
-        for (const batch of visitBatches) {
-          const vRes = await ml(
-            `/visits/items?ids=${batch.join(",")}&date_from=${encodeURIComponent(dateFrom)}&date_to=${encodeURIComponent(dateTo)}`,
-          ) as Record<string, { total_visits: number }>;
-          for (const [id, v] of Object.entries(vRes)) {
-            visitMap[id] = (visitMap[id] || 0) + (v?.total_visits || 0);
+        const cached = await serverLoad<VisitItem[]>(CACHE_KEY);
+        if (cached?.data && cached?.ts) {
+          const age = (Date.now() - new Date(cached.ts).getTime()) / 60000;
+          if (age < CACHE_TTL) {
+            setData(cached.data); setLoaded(true);
+            setLastUpdate(new Date(cached.ts)); return;
           }
         }
+      } catch {}
+    }
 
-        // Pedidos — busca os recentes
-        const orderRes = await ml(
-          `/orders/search?seller=${userId}&order.status=paid&sort=date_desc&limit=50&date_created_from=${encodeURIComponent(dateFrom)}`,
-        ) as { results: Array<{ order_items: Array<{ item: { id: string }; quantity: number; unit_price: number }> }> };
+    loadingRef.current = true;
+    setLoading(true);
+    try {
+      const now      = new Date();
+      const from     = new Date(now.getTime() - days * 86400000);
+      const dateFrom = toMLDate(from);
+      const dateTo   = toMLDate(now);
 
-        const soldMap: Record<string, { qty: number; revenue: number }> = {};
-        for (const order of orderRes.results || []) {
-          for (const oi of order.order_items || []) {
-            const id = oi.item?.id;
-            if (!id) continue;
-            soldMap[id] = soldMap[id] || { qty: 0, revenue: 0 };
-            soldMap[id].qty += oi.quantity;
-            soldMap[id].revenue += oi.quantity * oi.unit_price;
-          }
-        }
+      const mlItems = products.filter(p => p.mlItemId);
+      if (!mlItems.length) return;
+      const itemIds = mlItems.map(p => p.mlItemId!);
 
-        const result: VisitItem[] = mlItems.map((p) => {
-          const id = p.mlItemId!;
-          const visits = visitMap[id] || 0;
-          const sold = soldMap[id]?.qty || 0;
-          const revenue = soldMap[id]?.revenue || 0;
-          const conversion = visits > 0 ? (sold / visits) * 100 : 0;
-          const currentPrice = p.listings.find((l) => l.channel === "ml")?.currentPrice || 0;
-          return { name: p.name, sku: p.sku, mlItemId: id, image: p.image, visits, sold, revenue, conversion, currentPrice };
-        });
-
-        result.sort((a, b) => b.visits - a.visits);
-        setData(result);
-        setLoaded(true);
-        serverSave(CACHE_KEY, result).catch(() => {});
-        toast.success("Visitas e vendas atualizadas");
-      } catch (e) {
-        toast.error("Erro: " + (e as Error).message);
-      } finally {
-        setLoading(false);
+      // visitas em lotes de 50
+      const visitMap: Record<string, number> = {};
+      for (const batch of chunks(itemIds, 50)) {
+        const vRes = await ml(
+          `/visits/items?ids=${batch.join(",")}&date_from=${encodeURIComponent(dateFrom)}&date_to=${encodeURIComponent(dateTo)}`,
+        ) as Record<string, { total_visits: number }>;
+        for (const [id, v] of Object.entries(vRes))
+          visitMap[id] = (visitMap[id] || 0) + (v?.total_visits || 0);
       }
-    },
-    [products, userId, days, loaded],
-  );
+
+      // pedidos com paginacao completa
+      type OrderItem = { item: { id: string }; quantity: number; unit_price: number };
+      type RawOrder  = { order_items: OrderItem[] };
+      const allOrders = await fetchAllOrders(userId, "paid", dateFrom) as RawOrder[];
+
+      const soldMap: Record<string, { qty: number; revenue: number }> = {};
+      for (const order of allOrders) {
+        for (const oi of order.order_items || []) {
+          const id = oi.item?.id; if (!id) continue;
+          soldMap[id] = soldMap[id] || { qty: 0, revenue: 0 };
+          soldMap[id].qty     += oi.quantity;
+          soldMap[id].revenue += oi.quantity * oi.unit_price;
+        }
+      }
+
+      const result: VisitItem[] = mlItems.map(p => {
+        const id         = p.mlItemId!;
+        const visits     = visitMap[id] || 0;
+        const sold       = soldMap[id]?.qty || 0;
+        const revenue    = soldMap[id]?.revenue || 0;
+        const conversion = visits > 0 ? (sold / visits) * 100 : 0;
+        const currentPrice = p.listings.find(l => l.channel === "ml")?.currentPrice || 0;
+        return { name: p.name, sku: p.sku, mlItemId: id, image: p.image, visits, sold, revenue, conversion, currentPrice };
+      });
+
+      result.sort((a, b) => b.visits - a.visits);
+      setData(result); setLoaded(true); setLastUpdate(new Date());
+      serverSave(CACHE_KEY, result).catch(() => {});
+      if (force) toast.success(`${result.length} produtos · ${allOrders.length} pedidos carregados`);
+    } catch (e) {
+      if (force) toast.error("Erro: " + (e as Error).message);
+    } finally {
+      setLoading(false); loadingRef.current = false;
+    }
+  }, [products, userId, days]);
+
+  useAutoRefresh(() => load(false), AUTO_MS, !!userId && !!products.length);
 
   const filtered = data.filter(
-    (d) => !search || d.name.toLowerCase().includes(search.toLowerCase()) || d.sku.toLowerCase().includes(search.toLowerCase()),
+    d => !search || d.name.toLowerCase().includes(search.toLowerCase()) || d.sku.toLowerCase().includes(search.toLowerCase()),
   );
-
-  const totalVisits = data.reduce((a, b) => a + b.visits, 0);
-  const totalSold = data.reduce((a, b) => a + b.sold, 0);
+  const totalVisits  = data.reduce((a, b) => a + b.visits, 0);
+  const totalSold    = data.reduce((a, b) => a + b.sold, 0);
   const totalRevenue = data.reduce((a, b) => a + b.revenue, 0);
 
   return (
     <div className="space-y-5">
       <div className="grid grid-cols-3 gap-4">
-        <StatCard icon={<Eye />} label="Total Visitas" value={totalVisits.toLocaleString("pt-BR")} />
+        <StatCard icon={<Eye />}          label="Total Visitas"  value={totalVisits.toLocaleString("pt-BR")} />
         <StatCard icon={<ShoppingCart />} label="Total Vendidos" value={totalSold.toLocaleString("pt-BR")} />
-        <StatCard icon={<TrendingUp />} label="Faturamento" value={BRL(totalRevenue)} />
+        <StatCard icon={<TrendingUp />}   label="Faturamento"    value={BRL(totalRevenue)} />
       </div>
 
       <div className="flex flex-wrap gap-2 items-center">
         <div className="relative flex-1 min-w-48 max-w-72">
           <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-          <Input className="pl-8" placeholder="Buscar..." value={search} onChange={(e) => setSearch(e.target.value)} />
+          <Input className="pl-8" placeholder="Buscar produto ou SKU..." value={search} onChange={e => setSearch(e.target.value)} />
         </div>
-        <select
-          className="h-9 rounded-md border bg-background px-3 text-sm"
-          value={days}
-          onChange={(e) => setDays(+e.target.value)}
-        >
+        <select className="h-9 rounded-md border bg-background px-3 text-sm" value={days}
+          onChange={e => { setDays(+e.target.value); setLoaded(false); }}>
           <option value={7}>Últimos 7 dias</option>
           <option value={30}>Últimos 30 dias</option>
           <option value={60}>Últimos 60 dias</option>
           <option value={90}>Últimos 90 dias</option>
         </select>
-        <Button size="sm" onClick={() => load(true)} disabled={loading}>
+        {lastUpdate && (
+          <span className="text-xs text-muted-foreground flex items-center gap-1">
+            <Clock className="h-3 w-3" />
+            {lastUpdate.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
+          </span>
+        )}
+        <Button size="sm" onClick={() => load(true)} disabled={loading} className="ml-auto">
           {loading ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <RefreshCw className="h-4 w-4 mr-1" />}
           {loaded ? "Atualizar" : "Carregar"}
         </Button>
@@ -172,32 +158,37 @@ export function VisitasTab() {
           <table className="w-full text-sm">
             <thead className="bg-muted/50 text-muted-foreground">
               <tr>
-                {["Foto", "Produto", "SKU", "Preço", "Visitas", "Vendidos", "Receita", "Conversão", "Status"].map((h) => (
+                {["Foto","Produto","SKU","Preço","Visitas","Vendidos","Receita","Conversão","Status"].map(h => (
                   <th key={h} className="text-left font-medium px-3 py-2.5 whitespace-nowrap">{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {!loaded && !loading && (
-                <tr><td colSpan={9} className="px-3 py-10 text-center text-muted-foreground">Clique em Carregar para buscar os dados.</td></tr>
+                <tr><td colSpan={9} className="px-3 py-10 text-center text-muted-foreground">
+                  Clique em <strong>Carregar</strong> para buscar os dados.
+                </td></tr>
               )}
               {loading && (
-                <tr><td colSpan={9} className="px-3 py-10 text-center"><Loader2 className="h-6 w-6 animate-spin mx-auto text-muted-foreground" /></td></tr>
+                <tr><td colSpan={9} className="px-3 py-10 text-center">
+                  <Loader2 className="h-6 w-6 animate-spin mx-auto text-muted-foreground" />
+                  <div className="text-xs text-muted-foreground mt-2">Buscando visitas e todos os pedidos...</div>
+                </td></tr>
               )}
-              {filtered.map((item) => (
+              {!loading && filtered.map(item => (
                 <tr key={item.mlItemId} className="border-t hover:bg-muted/30">
                   <td className="px-3 py-2">
-                    <img src={item.image} alt={item.name} className="h-10 w-10 rounded-md object-cover bg-muted"
-                      onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
+                    <img src={item.image} alt="" className="h-10 w-10 rounded-md object-cover bg-muted"
+                      onError={e => { (e.target as HTMLImageElement).style.display = "none"; }} />
                   </td>
                   <td className="px-3 py-2 font-medium max-w-[180px]">
                     <div className="truncate" title={item.name}>{item.name}</div>
-                    <a href={`https://www.mercadolivre.com.br/anuncio/${item.mlItemId}`}
+                    <a href={`https://produto.mercadolivre.com.br/${item.mlItemId.replace("MLB","MLB-")}`}
                       target="_blank" rel="noreferrer" className="text-xs text-muted-foreground hover:text-primary">
                       {item.mlItemId}
                     </a>
                   </td>
-                  <td className="px-3 py-2 text-xs text-muted-foreground">{item.sku}</td>
+                  <td className="px-3 py-2 text-xs text-muted-foreground font-mono">{item.sku}</td>
                   <td className="px-3 py-2 font-medium">{BRL(item.currentPrice)}</td>
                   <td className="px-3 py-2 font-mono">{item.visits.toLocaleString("pt-BR")}</td>
                   <td className="px-3 py-2 font-mono font-semibold">{item.sold}</td>
@@ -207,18 +198,14 @@ export function VisitasTab() {
                       item.conversion >= 3 ? "bg-green-500/15 text-green-700 border-0"
                       : item.conversion >= 1 ? "bg-yellow-400/20 text-yellow-700 border-0"
                       : "bg-red-500/15 text-red-700 border-0"
-                    }>
-                      {item.conversion.toFixed(1)}%
-                    </Badge>
+                    }>{item.conversion.toFixed(1)}%</Badge>
                   </td>
                   <td className="px-3 py-2">
-                    {item.visits === 0 ? (
-                      <Badge className="bg-muted text-muted-foreground border-0">Sem visitas</Badge>
-                    ) : item.sold === 0 ? (
-                      <Badge className="bg-orange-500/15 text-orange-700 border-0">Sem vendas</Badge>
-                    ) : (
-                      <Badge className="bg-green-500/15 text-green-700 border-0">Vendendo</Badge>
-                    )}
+                    {item.visits === 0
+                      ? <Badge className="bg-muted text-muted-foreground border-0">Sem visitas</Badge>
+                      : item.sold === 0
+                      ? <Badge className="bg-orange-500/15 text-orange-700 border-0">Sem vendas</Badge>
+                      : <Badge className="bg-green-500/15 text-green-700 border-0">Vendendo</Badge>}
                   </td>
                 </tr>
               ))}
@@ -232,14 +219,12 @@ export function VisitasTab() {
 
 function StatCard({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
   return (
-    <Card>
-      <CardContent className="p-5 flex items-center gap-4">
-        <div className="h-11 w-11 rounded-xl flex items-center justify-center bg-primary/10 text-primary">{icon}</div>
-        <div>
-          <div className="text-xs text-muted-foreground font-medium">{label}</div>
-          <div className="text-xl font-bold">{value}</div>
-        </div>
-      </CardContent>
-    </Card>
+    <Card><CardContent className="p-5 flex items-center gap-4">
+      <div className="h-11 w-11 rounded-xl flex items-center justify-center bg-primary/10 text-primary">{icon}</div>
+      <div>
+        <div className="text-xs text-muted-foreground font-medium">{label}</div>
+        <div className="text-xl font-bold">{value}</div>
+      </div>
+    </CardContent></Card>
   );
 }

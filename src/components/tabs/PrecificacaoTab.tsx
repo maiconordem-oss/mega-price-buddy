@@ -5,7 +5,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { ChevronDown, Package, TrendingUp, CheckCircle2, AlertTriangle, Loader2, Download, Search } from "lucide-react";
+import { ChevronDown, ChevronRight, Package, TrendingUp, CheckCircle2, AlertTriangle, Loader2, Download, Search, Clock } from "lucide-react";
+import { useAutoRefresh } from "@/hooks/useAutoRefresh";
 import { useProducts } from "@/contexts/ProductsContext";
 import { useAuth } from "@/contexts/AuthContext";
 import { computePricingRow, BRL, getTierDeductions } from "@/lib/pricing";
@@ -48,6 +49,16 @@ export function PrecificacaoTab() {
     saveTimerRef.current = setTimeout(() => saveProductCosts(), 1500);
   }, [saveProductCosts]);
 
+  const [lastPriceUpdate, setLastPriceUpdate] = useState<Date | null>(null);
+  const [expandedSkus, setExpandedSkus] = useState<Set<string>>(new Set());
+
+  // auto-refresh de preços a cada 5 min
+  useAutoRefresh(async () => {
+    if (!loadMLProducts) return;
+    await loadMLProducts(false);
+    setLastPriceUpdate(new Date());
+  }, 5 * 60 * 1000, !!userId);
+
   const rows = useMemo(() => {
     return products.map((p) => ({ product: p, row: computePricingRow(p, params) }));
   }, [products, params]);
@@ -67,6 +78,17 @@ export function PrecificacaoTab() {
     if (filterStatus === "nocost") list = list.filter(({ row }) => row.status === "nocost");
     return list;
   }, [rows, search, filterStatus]);
+
+  // agrupa por SKU (produtos com mesmo SKU = mesmo produto físico, anuncios diferentes)
+  const grouped = useMemo(() => {
+    const map = new Map<string, typeof filtered>();
+    for (const item of filtered) {
+      const key = item.product.sku || item.product.mlItemId || item.product.name;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(item);
+    }
+    return Array.from(map.entries()).map(([sku, items]) => ({ sku, items }));
+  }, [filtered]);
 
   const stats = useMemo(() => {
     let withCost = 0, low = 0, ok = 0;
@@ -256,6 +278,12 @@ export function PrecificacaoTab() {
           <option value="ok">Margem adequada</option>
           <option value="nocost">Sem custo</option>
         </select>
+        {lastPriceUpdate && (
+          <span className="text-xs text-muted-foreground flex items-center gap-1">
+            <Clock className="h-3 w-3" />
+            {lastPriceUpdate.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
+          </span>
+        )}
         <div className="ml-auto flex gap-2">
           <Button size="sm" variant="outline" onClick={() => loadMLProducts(true)} disabled={loadingProducts}>
             {loadingProducts ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null}
@@ -307,7 +335,37 @@ export function PrecificacaoTab() {
                   {loadingProducts ? "Carregando..." : "Nenhum produto."}
                 </td></tr>
               )}
-              {filtered.map(({ product: p, row: r }) => {
+              {grouped.map(({ sku, items }) => {
+                const isGroup = items.length > 1;
+                const expanded = expandedSkus.has(sku);
+                const toggleGroup = () => setExpandedSkus(prev => {
+                  const s = new Set(prev); s.has(sku) ? s.delete(sku) : s.add(sku); return s;
+                });
+                // linha de grupo (SKU header) quando há mais de 1 anuncio
+                const groupHeader = isGroup ? (
+                  <tr key={`grp-${sku}`} className="bg-[#E8EDFF]/60 border-t-2 border-[#2D3277]/20 cursor-pointer hover:bg-[#E8EDFF]" onClick={toggleGroup}>
+                    <td className="px-2 py-1.5">
+                      {expanded
+                        ? <ChevronDown className="h-3.5 w-3.5 text-[#2D3277]" />
+                        : <ChevronRight className="h-3.5 w-3.5 text-[#2D3277]" />}
+                    </td>
+                    <td colSpan={13} className="px-2 py-1.5">
+                      <div className="flex items-center gap-2">
+                        <span className="inline-block bg-[#2D3277] text-[#FFE600] text-[9px] font-black px-1.5 py-0.5 rounded">SKU</span>
+                        <span className="font-bold text-[11px] text-[#2D3277]">{sku}</span>
+                        <span className="text-[10px] text-muted-foreground">{items.length} anúncios</span>
+                        <span className="text-[10px] text-muted-foreground ml-auto">{expanded ? "clique para recolher" : "clique para expandir"}</span>
+                      </div>
+                    </td>
+                  </tr>
+                ) : null;
+
+                // renderiza items do grupo (ou item único direto)
+                const showItems = !isGroup || expanded;
+
+                return [
+                  groupHeader,
+                  ...(showItems ? items : []).map(({ product: p, row: r }) => {
                 const itemId = p.mlItemId || p.sku;
                 const isUpdating = updatingIds.has(itemId) || updatingIds.has(itemId + "ideal");
                 const used7d = p.mlItemId ? getAccumulated7d(p.mlItemId) : 0;
@@ -558,6 +616,8 @@ export function PrecificacaoTab() {
                     </td>
                   </tr>
                 );
+              }), // fim items do grupo
+                ]; // fim return do grupo
               })}
             </tbody>
           </table>

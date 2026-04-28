@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback, type ReactNode } from "react";
+import { createContext, useContext, useState, useCallback, useEffect, useRef, type ReactNode } from "react";
 import type { PricingParams, Product } from "@/types/marketplace";
 import { MOCK_PRODUCTS } from "@/data/mockProducts";
 import { getProducts as getMLProducts } from "@/services/mercadolivre";
@@ -27,8 +27,18 @@ export const defaultParams: PricingParams = {
   packaging: 0.84,
 };
 
-const PARAMS_KEY = "pricing-params";
 const PRODUCTS_KEY = "ml-products";
+
+// params são por conta (shopId), não globais
+function paramsKey(shopId: string) { return `pricing-params:${shopId}` }
+
+function loadParamsForShop(shopId: string): PricingParams {
+  try {
+    const saved = localStorage.getItem(paramsKey(shopId));
+    if (saved) return { ...defaultParams, ...JSON.parse(saved) };
+  } catch {}
+  return defaultParams;
+}
 
 interface Ctx {
   products: Product[];
@@ -44,23 +54,31 @@ interface Ctx {
 const ProductsContext = createContext<Ctx | null>(null);
 
 export function ProductsProvider({ children }: { children: ReactNode }) {
-  const { userId, mlConnected } = useAuth();
+  const { userId, mlConnected, currentShop } = useAuth();
+  const shopId = currentShop?.id ?? "default";
+
   const [products, setProductsState] = useState<Product[]>(MOCK_PRODUCTS);
   const [loadingProducts, setLoadingProducts] = useState(false);
+  const [params, setParamsState] = useState<PricingParams>(() => loadParamsForShop(shopId));
 
-  const [params, setParamsState] = useState<PricingParams>(() => {
-    try {
-      const saved = localStorage.getItem(PARAMS_KEY);
-      if (saved) return { ...defaultParams, ...JSON.parse(saved) };
-    } catch {}
-    return defaultParams;
-  });
+  // Referência para saber qual conta estava ativa antes
+  const prevShopId = useRef(shopId);
+
+  // ── Reset completo ao trocar de conta ─────────────────────────────────
+  useEffect(() => {
+    if (prevShopId.current === shopId) return;
+    prevShopId.current = shopId;
+
+    // Limpa produtos e carrega params da nova conta
+    setProductsState(MOCK_PRODUCTS);
+    setParamsState(loadParamsForShop(shopId));
+  }, [shopId]);
 
   const setParams = useCallback((p: PricingParams) => {
     setParamsState(p);
-    localStorage.setItem(PARAMS_KEY, JSON.stringify(p));
-    serverSave(PARAMS_KEY, p).catch(() => {});
-  }, []);
+    localStorage.setItem(paramsKey(shopId), JSON.stringify(p));
+    serverSave("pricing-params", p).catch(() => {});
+  }, [shopId]);
 
   const setProducts = useCallback((p: Product[]) => setProductsState(p), []);
 
@@ -70,7 +88,7 @@ export function ProductsProvider({ children }: { children: ReactNode }) {
     );
   }, []);
 
-  /** Salva custos/configs de todos os produtos no servidor */
+  /** Salva custos/configs de todos os produtos no servidor (isolado por shopId via serverSave) */
   const saveProductCosts = useCallback(() => {
     setProductsState((current) => {
       const costData = current.map((p) => ({
@@ -103,7 +121,6 @@ export function ProductsProvider({ children }: { children: ReactNode }) {
         try {
           const cached = await serverLoad<Product[]>(PRODUCTS_KEY);
           if (cached?.data && Array.isArray(cached.data) && cached.data.length) {
-            // Restaura custos salvos
             const costsRaw = await serverLoad<Array<{ sku: string } & Partial<Product>>>("product-costs");
             const costsMap: Record<string, Partial<Product>> = {};
             if (costsRaw?.data) {
@@ -117,7 +134,6 @@ export function ProductsProvider({ children }: { children: ReactNode }) {
             }));
             setProductsState(merged);
             toast.success(`${merged.length} produtos carregados do cache`);
-            // Atualiza preços em background
             refreshPricesBackground(merged);
             return;
           }
@@ -128,7 +144,6 @@ export function ProductsProvider({ children }: { children: ReactNode }) {
       try {
         const mlProds = await getMLProducts(userId);
 
-        // Restaura custos salvos
         const costsRaw = await serverLoad<Array<{ sku: string } & Partial<Product>>>("product-costs");
         const costsMap: Record<string, Partial<Product>> = {};
         if (costsRaw?.data) {

@@ -171,3 +171,32 @@ export function chunks<T>(arr: T[], size: number): T[][] {
 export function BRL(v: number) {
   return v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
 }
+
+/** Busca TODOS os pedidos paginando automaticamente (limit=50 por vez, maxPages páginas) */
+export async function fetchAllOrders(
+  userId: string,
+  status: string,
+  dateFrom: string,
+  maxPages = 20,
+): Promise<Array<Record<string, unknown>>> {
+  const all: Array<Record<string, unknown>> = []
+  let offset = 0
+  const limit = 50
+
+  for (let page = 0; page < maxPages; page++) {
+    const res = await ml(
+      `/orders/search?seller=${userId}&order.status=${status}&sort=date_desc&limit=${limit}&offset=${offset}&date_created_from=${encodeURIComponent(dateFrom)}`,
+    ) as { results: Array<Record<string, unknown>>; paging: { total: number } }
+
+    const results = res.results || []
+    all.push(...results)
+
+    if (all.length >= (res.paging?.total ?? 0) || results.length < limit) break
+    offset += limit
+
+    // delay entre páginas para não bater rate limit
+    if (page < maxPages - 1) await new Promise(r => setTimeout(r, 350))
+  }
+
+  return all
+}
