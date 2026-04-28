@@ -51,13 +51,15 @@ export const refreshAccessToken = createServerFn({ method: 'POST' })
       refresh_token: data.refresh_token,
     })
 
-    const res = await fetch(`${ML_AUTH_BASE}/jms/oauth/token`, {
+    const res = await fetch(`${ML_API_BASE}/oauth/token`, {
       method:  'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
       body,
     })
 
-    const json = await res.json() as Record<string, unknown>
+    const text = await res.text()
+    let json: Record<string, unknown> = {}
+    try { json = JSON.parse(text) } catch { throw new Error(`ML returned non-JSON (HTTP ${res.status}): ${text.slice(0, 200)}`) }
     if (!res.ok) throw new Error(String(json.message || json.error || `HTTP ${res.status}`))
 
     return {
