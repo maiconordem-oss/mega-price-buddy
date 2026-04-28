@@ -26,38 +26,47 @@ export function getClientId()    { return ML_CLIENT_ID    }
 export function getRedirectUri() { return ML_REDIRECT_URI }
 export function getAuthBase()    { return ML_AUTH_BASE    }
 
-// ── Endpoints que o ML libera CORS (GET direto do browser é ok) ──────────
-const CORS_ALLOWED = ['/users/', '/items?', '/items/']
+// ── Endpoints com CORS BLOQUEADO pelo ML (nunca chamar direto do browser) ─
+// Qualquer path que comece com esses prefixos vai SEMPRE pelo server function
+const CORS_BLOCKED_PREFIXES = [
+  '/visits/',
+  '/orders/',
+  '/seller-promotions/',
+  '/pricing-automation/',
+  '/marketplace/',
+  '/moderations/',
+  '/user-products/',
+]
+
+function isCorsBlocked(path: string): boolean {
+  return CORS_BLOCKED_PREFIXES.some(prefix => path.startsWith(prefix))
+}
 
 // ── GET à API ML ───────────────────────────────────────────────────────────
 export async function ml(path: string): Promise<unknown> {
   if (!_token) throw new Error('Não autenticado. Conecte o Mercado Livre.')
 
-  // Endpoints com CORS bloqueado (visits, orders, seller-promotions, etc.)
-  // SEMPRE via server function — nunca direto do browser
-  const corsBlocked = !CORS_ALLOWED.some(prefix => path.includes(prefix))
-
-  if (!corsBlocked) {
-    // Tenta server function primeiro; se falhar (dev sem Workers), usa CORS direto
-    try {
-      const text = await mlGet({ data: { path, access_token: _token } })
-      return JSON.parse(text)
-    } catch {
-      const res = await fetch(`${ML_API_BASE}${path}`, {
-        headers: { Authorization: `Bearer ${_token}` },
-      })
-      const json: unknown = await res.json()
-      if (!res.ok) {
-        const e = json as Record<string, string>
-        throw new Error(e.message || e.error || `ML HTTP ${res.status}`)
-      }
-      return json
-    }
+  if (isCorsBlocked(path)) {
+    // NUNCA tentar direto — vai pelo Cloudflare Worker obrigatoriamente
+    const text = await mlGet({ data: { path, access_token: _token } })
+    return JSON.parse(text)
   }
 
-  // CORS bloqueado: obrigatório via server function (Cloudflare Worker)
-  const text = await mlGet({ data: { path, access_token: _token } })
-  return JSON.parse(text)
+  // Outros endpoints: tenta server function; fallback CORS apenas se Worker indisponível
+  try {
+    const text = await mlGet({ data: { path, access_token: _token } })
+    return JSON.parse(text)
+  } catch {
+    const res = await fetch(`${ML_API_BASE}${path}`, {
+      headers: { Authorization: `Bearer ${_token}` },
+    })
+    const json: unknown = await res.json()
+    if (!res.ok) {
+      const e = json as Record<string, string>
+      throw new Error(e.message || e.error || `ML HTTP ${res.status}`)
+    }
+    return json
+  }
 }
 
 // ── POST/PUT/DELETE à API ML ──────────────────────────────────────────────
