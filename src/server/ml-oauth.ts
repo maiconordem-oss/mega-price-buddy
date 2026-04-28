@@ -125,3 +125,50 @@ export const getMLAuthUrl = createServerFn({ method: 'POST' })
     })
     return { url: `${ML_AUTH_BASE}/authorization?${params.toString()}` }
   })
+
+// ── Proxy Apify — evita CORS do browser ──────────────────────────────────────
+export const apifyRun = createServerFn({ method: 'POST' })
+  .inputValidator((data: { token: string; keyword: string; pages: number }) => data)
+  .handler(async ({ data }) => {
+    const res = await fetch(
+      `https://api.apify.com/v2/acts/karamelo~mercadolivre-scraper-brasil-portugues/run-sync-get-dataset-items?token=${data.token}`,
+      {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ keyword: data.keyword, pages: data.pages }),
+      },
+    )
+    const text = await res.text()
+    if (!res.ok) {
+      let msg = `Apify HTTP ${res.status}`
+      try { const j = JSON.parse(text); msg = String(j.error?.message || j.message || msg) } catch {}
+      throw new Error(msg)
+    }
+    return text // JSON array string
+  })
+
+// ── Proxy Claude API — evita CORS + guarda API key no servidor ───────────────
+export const claudeAnalyze = createServerFn({ method: 'POST' })
+  .inputValidator((data: { apiKey: string; prompt: string; maxTokens: number }) => data)
+  .handler(async ({ data }) => {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method:  'POST',
+      headers: {
+        'Content-Type':      'application/json',
+        'x-api-key':         data.apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model:      'claude-sonnet-4-20250514',
+        max_tokens: data.maxTokens,
+        messages:   [{ role: 'user', content: data.prompt }],
+      }),
+    })
+    const text = await res.text()
+    if (!res.ok) {
+      let msg = `Claude API HTTP ${res.status}`
+      try { const j = JSON.parse(text); msg = String(j.error?.message || msg) } catch {}
+      throw new Error(msg)
+    }
+    return text // JSON string da resposta
+  })
