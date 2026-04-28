@@ -77,17 +77,18 @@ export function CurvaAbcTab() {
       }
 
       // pedidos com paginacao completa
-      type OrderItem = { item: { id: string }; quantity: number; unit_price: number };
-      type RawOrder  = { order_items: OrderItem[] };
-      const allOrders = await fetchAllOrders(userId, "paid", dateFrom) as RawOrder[];
+      type OrderItem = { item: { id: string }; quantity: number; unit_price: number }
+      type RawOrder  = { order_items: OrderItem[] }
+      const allOrders = await fetchAllOrders(userId, "paid", dateFrom) as RawOrder[]
 
-      const soldMap: Record<string, { qty: number; revenue: number }> = {};
+      const soldMap: Record<string, { qty: number; revenue: number }> = {}
       for (const order of allOrders) {
         for (const oi of order.order_items || []) {
-          const id = oi.item?.id; if (!id) continue;
-          soldMap[id] = soldMap[id] || { qty: 0, revenue: 0 };
-          soldMap[id].qty     += oi.quantity;
-          soldMap[id].revenue += oi.quantity * oi.unit_price;
+          const rawId = oi.item?.id; if (!rawId) continue
+          const id = String(rawId).startsWith("MLB") ? String(rawId) : `MLB${rawId}`
+          soldMap[id] = soldMap[id] || { qty: 0, revenue: 0 }
+          soldMap[id].qty     += Number(oi.quantity) || 0
+          soldMap[id].revenue += (Number(oi.quantity) || 0) * (Number(oi.unit_price) || 0)
         }
       }
 

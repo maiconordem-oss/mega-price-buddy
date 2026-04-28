@@ -184,14 +184,28 @@ export async function fetchAllOrders(
   const limit = 50
 
   for (let page = 0; page < maxPages; page++) {
-    const res = await ml(
-      `/orders/search?seller=${userId}&order.status=${status}&sort=date_desc&limit=${limit}&offset=${offset}&date_created_from=${encodeURIComponent(dateFrom)}`,
-    ) as { results: Array<Record<string, unknown>>; paging: { total: number } }
+    // Parâmetro correto da API ML: order.date_created.from (não date_created_from)
+    const qs = [
+      `seller=${encodeURIComponent(userId)}`,
+      `order.status=${encodeURIComponent(status)}`,
+      `sort=date_desc`,
+      `limit=${limit}`,
+      `offset=${offset}`,
+      `order.date_created.from=${encodeURIComponent(dateFrom)}`,
+    ].join('&')
 
-    const results = res.results || []
+    const res = await ml(`/orders/search?${qs}`) as {
+      results?: Array<Record<string, unknown>>
+      orders?:  Array<Record<string, unknown>>
+      paging?:  { total: number; limit: number; offset: number }
+    }
+
+    // API pode retornar "results" ou "orders" dependendo da versão
+    const results = res.results ?? res.orders ?? []
     all.push(...results)
 
-    if (all.length >= (res.paging?.total ?? 0) || results.length < limit) break
+    const total = res.paging?.total ?? 0
+    if (results.length < limit || all.length >= total) break
     offset += limit
 
     // delay entre páginas para não bater rate limit
