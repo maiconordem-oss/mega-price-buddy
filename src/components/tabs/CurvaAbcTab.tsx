@@ -66,14 +66,20 @@ export function CurvaAbcTab() {
       const mlItems = products.filter(p => p.mlItemId);
       const itemIds = mlItems.map(p => p.mlItemId!);
 
-      // visitas em lotes de 50
-      const visitMap: Record<string, number> = {};
-      for (const batch of chunks(itemIds, 50)) {
-        const vRes = await ml(
-          `/visits/items?ids=${batch.join(",")}&date_from=${encodeURIComponent(dateFrom)}&date_to=${encodeURIComponent(dateTo)}`,
-        ) as Record<string, { total_visits: number }>;
-        for (const [id, v] of Object.entries(vRes))
-          visitMap[id] = (visitMap[id] || 0) + (v?.total_visits || 0);
+      // visitas: API aceita apenas 1 item por request — paralelo em lotes de 10
+      const visitMap: Record<string, number> = {}
+      for (const batch of chunks(itemIds, 10)) {
+        await Promise.all(batch.map(async id => {
+          try {
+            const vRes = await ml(
+              `/visits/items?ids=${id}&date_from=${encodeURIComponent(dateFrom)}&date_to=${encodeURIComponent(dateTo)}`,
+            ) as Record<string, { total_visits: number }>
+            visitMap[id] = vRes[id]?.total_visits || 0
+          } catch {
+            visitMap[id] = 0
+          }
+        }))
+        await new Promise(r => setTimeout(r, 200))
       }
 
       // pedidos com paginacao completa
