@@ -49,7 +49,7 @@ const ABC_COLORS: Record<AbcClass, string> = {
 
 const ESTRELA_COLOR = "#2D3277"
 
-const CORTES = { A: 0.70, B: 0.90 } // 0-70% = A, 70-90% = B, >90% = C
+const CORTES = { A: 0.80, B: 0.95 } // 0-80% = A, 80-95% = B, >95% = C
 
 // ── Função de classificação ABC ───────────────────────────────────────────────
 // Recebe lista de itens com valor numérico já ordenada do maior para o menor.
@@ -89,21 +89,17 @@ function classificarABC(
 
 function calcularEstrela(
   item: Omit<AbcItem, "isEstrela" | "estrelScore">,
-  avgConversion: number,
-  totalRevenue: number,
+  _avgConversion: number,
+  _totalRevenue: number,
 ): { isEstrela: boolean; estrelScore: number } {
-  let score = 0
+  // Conta quantas métricas são Classe A
+  const classesA = [item.abcRevenue, item.abcQty, item.abcVisits].filter(c => c === "A").length
 
-  if (item.abcRevenue === "A")                            score += 40
-  if (item.abcQty === "A")                               score += 20
-  else if (item.abcQty === "B")                          score += 10
-  if (item.conversion >= avgConversion * 1.5 && item.conversion > 0) score += 20
-  else if (item.conversion >= avgConversion && item.conversion > 0)  score += 10
-  if (item.abcVisits === "A")                            score += 10
-  if (totalRevenue > 0 && item.revenue / totalRevenue >= 0.02)       score += 10
+  // Produto Estrela = Classe A em pelo menos 2 das 3 métricas
+  const isEstrela = classesA >= 2
 
-  // É estrela se: curva A em faturamento + score ≥ 60
-  const isEstrela = item.abcRevenue === "A" && score >= 60
+  // Score: 0-100 proporcional ao número de A's (para exibição)
+  const score = Math.round((classesA / 3) * 100)
 
   return { isEstrela, estrelScore: score }
 }
@@ -250,7 +246,7 @@ export function CurvaAbcTab() {
                 style={{ background: ABC_COLORS[l] }}>{l}</div>
               <div>
                 <div className="text-xs text-muted-foreground">
-                  {l === "A" ? `0–70% ${modeLabel}` : l === "B" ? `70–90% ${modeLabel}` : `90–100%`}
+                  {l === "A" ? `0–80% ${modeLabel}` : l === "B" ? `80–95% ${modeLabel}` : `95–100%`}
                 </div>
                 <div className="text-xl font-bold">{counts[l]}</div>
               </div>
@@ -279,10 +275,8 @@ export function CurvaAbcTab() {
       {/* Legenda estrela */}
       <div className="text-xs text-muted-foreground bg-muted/40 rounded-lg px-4 py-2.5 flex flex-wrap gap-x-4 gap-y-1">
         <span className="font-medium text-foreground">⭐ Produto Estrela:</span>
-        <span>Curva A em faturamento</span>
-        <span>+ Curva A ou B em quantidade</span>
-        <span>+ Conversão ≥ 1,5× a média</span>
-        <span>+ Score ≥ 60/100</span>
+        <span>Classe A em pelo menos 2 das 3 métricas</span>
+        <span>(faturamento, quantidade, visitas)</span>
       </div>
 
       {/* ── Toolbar ──────────────────────────────────────────────────────── */}
