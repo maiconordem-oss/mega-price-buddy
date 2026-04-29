@@ -6,8 +6,9 @@ import { BRL } from "@/services/ml-api"
 import { useProducts } from "@/contexts/ProductsContext"
 import { useAnalytics, filterOrdersByDays, buildOrderMap } from "@/contexts/AnalyticsContext"
 import { useShopReset } from "@/hooks/useShopReset"
-import { Loader2, RefreshCw, Clock, Star } from "lucide-react"
+import { Loader2, RefreshCw, Clock, Star, Copy, Check } from "lucide-react"
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, ReferenceLine } from "recharts"
+import { toast } from "sonner"
 
 // ── Tipos ─────────────────────────────────────────────────────────────────────
 
@@ -112,6 +113,14 @@ export function CurvaAbcTab() {
   const [days, setDays]   = useState(30)
   const [mode, setMode]   = useState<Mode>("revenue")
   const [showOnly, setShowOnly] = useState<"all" | "estrela">("all")
+  const [copied, setCopied] = useState<string | null>(null)
+
+  const copyToClipboard = useCallback((text: string, label: string, key: string) => {
+    navigator.clipboard.writeText(text)
+    setCopied(key)
+    toast.success(`${label} copiado!`, { duration: 1500 })
+    setTimeout(() => setCopied(null), 2000)
+  }, [])
 
   useShopReset(useCallback(() => { setDays(30); setShowOnly("all") }, []))
 
@@ -459,19 +468,25 @@ export function CurvaAbcTab() {
                             <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-1">
                               {item.sku && item.sku !== item.mlItemId && (
                                 <button
-                                  className="text-xs text-muted-foreground hover:text-foreground font-mono flex items-center gap-0.5"
+                                  className="text-xs text-muted-foreground hover:text-foreground font-mono flex items-center gap-0.5 transition-colors"
                                   title="Copiar SKU"
-                                  onClick={() => { navigator.clipboard.writeText(item.sku); }}
+                                  onClick={() => copyToClipboard(item.sku, "SKU", `sku-${item.mlItemId}`)}
                                 >
-                                  SKU:{item.sku.length > 12 ? item.sku.slice(0, 12) + "…" : item.sku}
+                                  {copied === `sku-${item.mlItemId}`
+                                    ? <Check className="h-3 w-3 text-green-600 shrink-0" />
+                                    : <Copy className="h-3 w-3 shrink-0 opacity-50" />}
+                                  <span>{item.sku.length > 14 ? item.sku.slice(0, 14) + "…" : item.sku}</span>
                                 </button>
                               )}
                               <button
-                                className="text-xs text-[#2D3277] hover:text-[#1e2456] font-mono flex items-center gap-0.5"
+                                className="text-xs text-[#2D3277] hover:text-[#1e2456] font-mono flex items-center gap-0.5 transition-colors"
                                 title="Copiar MLB"
-                                onClick={() => { navigator.clipboard.writeText(item.mlItemId); }}
+                                onClick={() => copyToClipboard(item.mlItemId, "MLB", `mlb-${item.mlItemId}`)}
                               >
-                                {item.mlItemId}
+                                {copied === `mlb-${item.mlItemId}`
+                                  ? <Check className="h-3 w-3 text-green-600 shrink-0" />
+                                  : <Copy className="h-3 w-3 shrink-0 opacity-50" />}
+                                <span>{item.mlItemId}</span>
                               </button>
                               <a
                                 href={`https://produto.mercadolivre.com.br/${item.mlItemId.replace("MLB", "MLB-")}`}
