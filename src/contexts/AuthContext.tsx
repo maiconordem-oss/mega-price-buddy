@@ -267,6 +267,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const u = await ml('/users/me') as MLUser
     setMlUser(u)
     setUserId(String(u.id))
+    setMLUserId(String(u.id))
     setConnected(true)
 
     // atualiza a shop com os dados ML
