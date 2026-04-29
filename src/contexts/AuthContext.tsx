@@ -1,6 +1,6 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react'
 import {
-  ml, setToken, setShopId, serverSave,
+  ml, setToken, setShopId, setUserId as setMLUserId, serverSave,
   exchangeCode, refreshToken as refreshMLToken, getAuthUrl,
 } from '@/services/ml-api'
 
