@@ -332,8 +332,12 @@ export function PrecificacaoTab() {
             </thead>
             <tbody>
               {filtered.length === 0 && (
-                <tr><td colSpan={14} className="px-3 py-10 text-center text-muted-foreground">
-                  {loadingProducts ? "Carregando..." : "Nenhum produto."}
+                <tr><td colSpan={14} className="px-3 py-12 text-center text-muted-foreground">
+                  {loadingProducts
+                    ? <span className="flex items-center justify-center gap-2"><Loader2 className="h-4 w-4 animate-spin" />Carregando produtos do ML...</span>
+                    : products.length === 0
+                    ? <span>Clique em <strong>↻ Carregar ML</strong> para buscar seus anúncios do Mercado Livre.</span>
+                    : <span>Nenhum produto encontrado com os filtros selecionados.</span>}
                 </td></tr>
               )}
               {grouped.map(({ sku, items }) => {

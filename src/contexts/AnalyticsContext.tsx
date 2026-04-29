@@ -79,6 +79,7 @@ function readLS(shopId: string): CachePayload | null {
     if (!parsed?.data || !parsed?.ts) return null
     const ageMin = (Date.now() - new Date(parsed.ts).getTime()) / 60000
     if (ageMin >= CACHE_TTL_MIN) return null
+    if (!isValidPayload(parsed.data)) return null  // cache com visitas zeradas → invalida
     return parsed.data
   } catch { return null }
 }
@@ -90,6 +91,15 @@ function writeLS(shopId: string, payload: CachePayload) {
       ts:   new Date().toISOString(),
     }))
   } catch {}
+}
+
+// Valida se o payload tem dados reais (não zerados)
+function isValidPayload(p: CachePayload | null): p is CachePayload {
+  if (!p) return false
+  // Rejeita cache onde todas as visitas são zero (indica busca com falha)
+  const visits = Object.values(p.visitMap || {})
+  if (visits.length > 0 && visits.every(v => v === 0)) return false
+  return true
 }
 
 function readLSDate(shopId: string): Date | null {
@@ -111,6 +121,7 @@ async function readKV(userId: string, shopId: string): Promise<CachePayload | nu
     if (!parsed?.data || !parsed?.ts) return null
     const ageMin = (Date.now() - new Date(parsed.ts).getTime()) / 60000
     if (ageMin >= CACHE_TTL_MIN) return null
+    if (!isValidPayload(parsed.data)) return null  // cache com visitas zeradas → invalida
     return parsed.data
   } catch { return null }
 }
@@ -137,11 +148,17 @@ export function AnalyticsProvider({ children }: { children: ReactNode }) {
   const shopId = currentShop?.id ?? 'default'
 
   // Estado inicial: lê localStorage de forma síncrona → zero spinner
-  const [visitMap,  setVisitMap]  = useState<VisitData>(() => readLS(shopId)?.visitMap ?? {})
-  const [orderMap,  setOrderMap]  = useState<OrderData>(() => readLS(shopId)?.orderMap ?? {})
-  const [allOrders, setAllOrders] = useState<Order[]>(() => readLS(shopId)?.allOrders ?? [])
+  const [visitMap,  setVisitMap]  = useState<VisitData>(() => {
+    const c = readLS(shopId); return isValidPayload(c) ? c.visitMap : {}
+  })
+  const [orderMap,  setOrderMap]  = useState<OrderData>(() => {
+    const c = readLS(shopId); return isValidPayload(c) ? c.orderMap : {}
+  })
+  const [allOrders, setAllOrders] = useState<Order[]>(() => {
+    const c = readLS(shopId); return isValidPayload(c) ? c.allOrders : []
+  })
   const [lastFetch, setLastFetch] = useState<Date | null>(() => readLSDate(shopId))
-  const [loaded,    setLoaded]    = useState<boolean>(() => readLS(shopId) !== null)
+  const [loaded,    setLoaded]    = useState<boolean>(() => isValidPayload(readLS(shopId)))
   const [loading,   setLoading]   = useState(false)
 
   const loadingRef  = useRef(false)

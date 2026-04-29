@@ -57,7 +57,9 @@ export function ProductsProvider({ children }: { children: ReactNode }) {
   const { userId, mlConnected, currentShop } = useAuth();
   const shopId = currentShop?.id ?? "default";
 
-  const [products, setProductsState] = useState<Product[]>(MOCK_PRODUCTS);
+  // Inicia vazio — MOCK_PRODUCTS só aparecem quando explicitamente solicitado
+  // para não confundir com produtos reais do ML
+  const [products, setProductsState] = useState<Product[]>([]);
   const [loadingProducts, setLoadingProducts] = useState(false);
   const [params, setParamsState] = useState<PricingParams>(() => loadParamsForShop(shopId));
 
@@ -70,7 +72,7 @@ export function ProductsProvider({ children }: { children: ReactNode }) {
     prevShopId.current = shopId;
 
     // Limpa produtos e carrega params da nova conta
-    setProductsState(MOCK_PRODUCTS);
+    setProductsState([]);
     setParamsState(loadParamsForShop(shopId));
   }, [shopId]);
 

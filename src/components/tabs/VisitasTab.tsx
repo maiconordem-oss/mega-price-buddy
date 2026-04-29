@@ -89,7 +89,9 @@ export function VisitasTab() {
             <tbody>
               {!loaded && !loading && (
                 <tr><td colSpan={9} className="px-3 py-10 text-center text-muted-foreground">
-                  Carregando dados automaticamente... ou clique em <strong>Carregar</strong>.
+                  {products.filter(p => p.mlItemId).length === 0
+                    ? <span>Carregue os produtos do ML na aba <strong>Precificação</strong> primeiro.</span>
+                    : <span>Clique em <strong>Carregar</strong> para buscar visitas e vendas.</span>}
                 </td></tr>
               )}
               {loading && (
