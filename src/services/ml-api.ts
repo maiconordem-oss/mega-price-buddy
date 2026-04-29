@@ -143,13 +143,39 @@ export async function getAuthUrl(codeChallenge: string): Promise<string> {
   }
 }
 
-// ── Persistência local ─────────────────────────────────────────────────────
-function storageKey(key: string) { return `megalabs:${_shopId || 'default'}:${key}` }
+// ── Persistência: KV no servidor + fallback localStorage ──────────────────
+// Chave isolada por userId (ML) + shopId. Se userId vazio, cai no localStorage.
+import { kvSave, kvLoad } from '@/server/kv'
 
-export async function serverSave(key: string, data: unknown): Promise<void> {
+let _userId = ''
+export function setUserId(id: string) { _userId = id }
+export function getUserId() { return _userId }
+
+function storageKey(key: string) { return `megalabs:${_userId || 'anon'}:${_shopId || 'default'}:${key}` }
+
+export async function serverSave(key: string, data: unknown, ttlSeconds?: number): Promise<void> {
+  // Sempre grava localStorage (cache rápido / offline)
   try { localStorage.setItem(storageKey(key), JSON.stringify({ data, ts: new Date().toISOString() })) } catch {}
+  // Tenta gravar no KV se temos userId
+  if (_userId) {
+    try { await kvSave({ data: { userId: _userId, shopId: _shopId || 'default', key, value: data, ttlSeconds } }) } catch {}
+  }
 }
+
 export async function serverLoad<T>(key: string): Promise<{ data: T; ts: string } | null> {
+  // 1) Tenta KV (fonte de verdade entre dispositivos)
+  if (_userId) {
+    try {
+      const raw = await kvLoad({ data: { userId: _userId, shopId: _shopId || 'default', key } })
+      if (raw) {
+        const parsed = JSON.parse(raw) as { data: T; ts: string }
+        // Atualiza cache local
+        try { localStorage.setItem(storageKey(key), raw) } catch {}
+        return parsed
+      }
+    } catch {}
+  }
+  // 2) Fallback localStorage
   try {
     const raw = localStorage.getItem(storageKey(key))
     return raw ? JSON.parse(raw) as { data: T; ts: string } : null
