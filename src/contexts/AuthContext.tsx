@@ -1,6 +1,6 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react'
 import {
-  ml, setToken, setShopId, serverSave,
+  ml, setToken, setShopId, setUserId as setMLUserId, serverSave,
   exchangeCode, refreshToken as refreshMLToken, getAuthUrl,
 } from '@/services/ml-api'
 
@@ -107,6 +107,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setShopId(shop.id)
     setMlUser(null)
     setUserId('')
+    setMLUserId('')
     setConnected(false)
     setToken('')
 
@@ -119,6 +120,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const u = await ml('/users/me') as MLUser
       setMlUser(u)
       setUserId(String(u.id))
+      setMLUserId(String(u.id))
       setConnected(true)
 
       // atualiza nickname na shop
@@ -187,7 +189,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // ── logout ────────────────────────────────────────────────────────────────
   const logout = useCallback(() => {
     setUser(null); setUserId(''); setMlUser(null); setConnected(false)
-    setShopSt(null); setShops([]); setToken(''); setShopId('')
+    setShopSt(null); setShops([]); setToken(''); setShopId(''); setMLUserId('')
     LS.del(SESSION_KEY)
   }, [])
 
@@ -266,6 +268,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const u = await ml('/users/me') as MLUser
     setMlUser(u)
     setUserId(String(u.id))
+    setMLUserId(String(u.id))
     setConnected(true)
 
     // atualiza a shop com os dados ML
@@ -296,6 +299,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       LS.del(refreshKey(id))
     }
     setToken('')
+    setMLUserId('')
     setMlUser(null)
     setUserId('')
     setConnected(false)
