@@ -48,19 +48,16 @@ export const kvSave = createServerFn({ method: 'POST' })
   })
 
 // ── Load ─────────────────────────────────────────────────────────────────────
+// Retorna o JSON serializado como string para evitar restrições de serialização
+// do TanStack Start. O cliente faz JSON.parse para recuperar { data, ts }.
 export const kvLoad = createServerFn({ method: 'POST' })
   .inputValidator((data: { userId: string; shopId: string; key: string }) => data)
-  .handler(async ({ data }) => {
+  .handler(async ({ data }): Promise<string | null> => {
     const kv = getKV()
     if (!kv) return null
     const fullKey = buildKey(data.userId, data.shopId, data.key)
     const raw = await kv.get(fullKey, 'text')
-    if (!raw) return null
-    try {
-      return JSON.parse(raw) as { data: unknown; ts: string }
-    } catch {
-      return null
-    }
+    return raw ?? null
   })
 
 // ── Delete ───────────────────────────────────────────────────────────────────
