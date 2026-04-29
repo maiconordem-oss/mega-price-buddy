@@ -299,6 +299,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       LS.del(refreshKey(id))
     }
     setToken('')
+    setMLUserId('')
     setMlUser(null)
     setUserId('')
     setConnected(false)
