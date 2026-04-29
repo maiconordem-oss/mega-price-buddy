@@ -107,6 +107,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setShopId(shop.id)
     setMlUser(null)
     setUserId('')
+    setMLUserId('')
     setConnected(false)
     setToken('')
 
