@@ -1,13 +1,14 @@
 /**
  * AnalyticsContext — busca centralizada de visitas + pedidos (90 dias)
- * Cache persistente: 6h no localStorage. Nunca rebusca sem necessidade.
+ * Cache persistente: 6h no localStorage.
+ * Carregamento SÍNCRONO do cache no estado inicial — zero spinner ao abrir.
  */
 
 import {
   createContext, useContext, useState, useCallback,
   useRef, useEffect, type ReactNode,
 } from 'react'
-import { ml, serverSave, serverLoad, toMLDate, chunks, fetchAllOrders } from '@/services/ml-api'
+import { ml, serverSave, toMLDate, chunks, fetchAllOrders } from '@/services/ml-api'
 import { useAuth } from './AuthContext'
 import { useProducts } from './ProductsContext'
 import { useShopReset } from '@/hooks/useShopReset'
@@ -47,8 +48,8 @@ interface Ctx {
 const AnalyticsContext = createContext<Ctx | null>(null)
 
 // ── Cache ─────────────────────────────────────────────────────────────────────
-const CACHE_KEY = 'analytics-90d'
-const CACHE_TTL = 360  // 6 horas em minutos
+
+const CACHE_TTL_MIN = 360  // 6 horas
 
 interface CachePayload {
   visitMap:  VisitData
@@ -57,25 +58,88 @@ interface CachePayload {
   fetchedAt: string
 }
 
+// Lê cache do localStorage de forma SÍNCRONA (sem await)
+// Chama antes do primeiro render para não mostrar spinner
+function readCacheSync(shopId: string, key: string): CachePayload | null {
+  try {
+    const raw = localStorage.getItem(`megalabs:${shopId || 'default'}:${key}`)
+    if (!raw) return null
+    const parsed: { data: CachePayload; ts: string } = JSON.parse(raw)
+    if (!parsed?.data || !parsed?.ts) return null
+    const ageMin = (Date.now() - new Date(parsed.ts).getTime()) / 60000
+    if (ageMin >= CACHE_TTL_MIN) return null
+    return parsed.data
+  } catch { return null }
+}
+
+function writeCacheSync(shopId: string, key: string, payload: CachePayload) {
+  try {
+    localStorage.setItem(
+      `megalabs:${shopId || 'default'}:${key}`,
+      JSON.stringify({ data: payload, ts: new Date().toISOString() })
+    )
+  } catch {}
+}
+
+const CACHE_KEY = 'analytics-90d'
+
 // ── Provider ──────────────────────────────────────────────────────────────────
+
 export function AnalyticsProvider({ children }: { children: ReactNode }) {
-  const { userId, mlConnected } = useAuth()
+  const { userId, mlConnected, currentShop } = useAuth()
   const { products } = useProducts()
+  const shopId = currentShop?.id ?? 'default'
 
-  const [visitMap,  setVisitMap]  = useState<VisitData>({})
-  const [orderMap,  setOrderMap]  = useState<OrderData>({})
-  const [allOrders, setAllOrders] = useState<Order[]>([])
-  const [loading,   setLoading]   = useState(false)
-  const [loaded,    setLoaded]    = useState(false)
-  const [lastFetch, setLastFetch] = useState<Date | null>(null)
+  // ── Estado inicial: tenta carregar do cache ANTES do primeiro render ──────
+  const [visitMap,  setVisitMap]  = useState<VisitData>(() => {
+    const c = readCacheSync(shopId, CACHE_KEY)
+    return c?.visitMap ?? {}
+  })
+  const [orderMap,  setOrderMap]  = useState<OrderData>(() => {
+    const c = readCacheSync(shopId, CACHE_KEY)
+    return c?.orderMap ?? {}
+  })
+  const [allOrders, setAllOrders] = useState<Order[]>(() => {
+    const c = readCacheSync(shopId, CACHE_KEY)
+    return c?.allOrders ?? []
+  })
+  const [lastFetch, setLastFetch] = useState<Date | null>(() => {
+    try {
+      const raw = localStorage.getItem(`megalabs:${shopId}:${CACHE_KEY}`)
+      if (!raw) return null
+      const parsed = JSON.parse(raw)
+      return parsed?.ts ? new Date(parsed.ts) : null
+    } catch { return null }
+  })
+  const [loaded,  setLoaded]  = useState<boolean>(() => {
+    return readCacheSync(shopId, CACHE_KEY) !== null
+  })
+  const [loading, setLoading] = useState(false)
+
   const loadingRef  = useRef(false)
-  const initDoneRef = useRef(false)  // garante que auto-load roda só uma vez por sessão
+  const initDoneRef = useRef(false)
 
+  // ── Reset ao trocar de conta — recarrega cache da nova conta ─────────────
   useShopReset(useCallback(() => {
-    setVisitMap({}); setOrderMap({}); setAllOrders([])
-    setLoaded(false); setLastFetch(null)
+    // Tenta carregar cache da nova conta imediatamente
+    const newShopId = currentShop?.id ?? 'default'
+    const cached = readCacheSync(newShopId, CACHE_KEY)
+    if (cached) {
+      setVisitMap(cached.visitMap)
+      setOrderMap(cached.orderMap)
+      setAllOrders(cached.allOrders)
+      setLoaded(true)
+      try {
+        const raw = localStorage.getItem(`megalabs:${newShopId}:${CACHE_KEY}`)
+        const parsed = raw ? JSON.parse(raw) : null
+        setLastFetch(parsed?.ts ? new Date(parsed.ts) : null)
+      } catch {}
+    } else {
+      setVisitMap({}); setOrderMap({}); setAllOrders([])
+      setLoaded(false); setLastFetch(null)
+    }
     initDoneRef.current = false
-  }, []))
+  }, [currentShop]))
 
   function applyPayload(p: CachePayload) {
     setVisitMap(p.visitMap)
@@ -83,20 +147,6 @@ export function AnalyticsProvider({ children }: { children: ReactNode }) {
     setAllOrders(p.allOrders)
     setLastFetch(new Date(p.fetchedAt))
     setLoaded(true)
-  }
-
-  // ── Verifica cache sem fazer fetch ────────────────────────────────────────
-  async function tryCache(): Promise<boolean> {
-    try {
-      const cached = await serverLoad<CachePayload>(CACHE_KEY)
-      if (!cached?.data || !cached?.ts) return false
-      const ageMin = (Date.now() - new Date(cached.ts).getTime()) / 60000
-      if (ageMin >= CACHE_TTL) return false
-      applyPayload(cached.data)
-      return true
-    } catch {
-      return false
-    }
   }
 
   // ── Fetch completo da API ─────────────────────────────────────────────────
@@ -107,11 +157,10 @@ export function AnalyticsProvider({ children }: { children: ReactNode }) {
     }
     if (loadingRef.current) return
 
-    // Sem force: tenta memória, depois cache, depois busca
-    if (!force) {
-      if (loaded) return                    // já em memória, não faz nada
-      const hit = await tryCache()
-      if (hit) return                       // cache válido, carregou do localStorage
+    // Sem force: se já está em memória e cache ainda válido, não faz nada
+    if (!force && loaded) {
+      const cached = readCacheSync(shopId, CACHE_KEY)
+      if (cached) return
     }
 
     const mlItems = products.filter(p => p.mlItemId)
@@ -130,8 +179,6 @@ export function AnalyticsProvider({ children }: { children: ReactNode }) {
       const itemIds  = mlItems.map(p => p.mlItemId!)
 
       // ── 1. Visitas ────────────────────────────────────────────────────────
-      // A API /visits/items retorna ARRAY: [{ item_id: "MLB...", total_visits: N }, ...]
-      // Aceita apenas 1 id por request
       toast.loading(`Buscando visitas (${itemIds.length} produtos)...`, { id: 'analytics' })
       const newVisitMap: VisitData = {}
 
@@ -141,23 +188,18 @@ export function AnalyticsProvider({ children }: { children: ReactNode }) {
             const res = await ml(
               `/visits/items?ids=${id}&date_from=${encodeURIComponent(dateFrom)}&date_to=${encodeURIComponent(dateTo)}`,
             )
-            // Resposta pode ser array OU objeto dependendo da versão da API
             if (Array.isArray(res)) {
-              // formato array: [{ item_id: "MLB123", total_visits: 42 }]
               const found = (res as Array<{ item_id: string; total_visits: number }>)
                 .find(r => r.item_id === id)
               newVisitMap[id] = found?.total_visits || 0
             } else {
-              // formato objeto: { "MLB123": { total_visits: 42 } }
               const obj = res as Record<string, { total_visits?: number } | number>
               const val = obj[id]
               newVisitMap[id] = typeof val === 'number'
                 ? val
                 : (val as { total_visits?: number })?.total_visits || 0
             }
-          } catch {
-            newVisitMap[id] = 0
-          }
+          } catch { newVisitMap[id] = 0 }
         }))
         await new Promise(r => setTimeout(r, 200))
       }
@@ -165,24 +207,13 @@ export function AnalyticsProvider({ children }: { children: ReactNode }) {
       // ── 2. Pedidos ────────────────────────────────────────────────────────
       toast.loading('Buscando pedidos (90 dias)...', { id: 'analytics' })
 
-      type RawOI = {
-        item:       { id: string | number; title?: string }
-        quantity:   number
-        unit_price: number
-      }
-      type RawOrder = {
-        id:           number
-        date_created: string
-        buyer:        { nickname: string }
-        total_amount: number
-        status:       string
-        order_items:  RawOI[]
-      }
+      type RawOI = { item: { id: string | number; title?: string }; quantity: number; unit_price: number }
+      type RawOrder = { id: number; date_created: string; buyer: { nickname: string }; total_amount: number; status: string; order_items: RawOI[] }
 
       const raw = await fetchAllOrders(userId, 'paid', dateFrom, 40) as RawOrder[]
 
-      const newOrderMap: OrderData  = {}
-      const newAllOrders: Order[]   = raw.map(o => {
+      const newOrderMap: OrderData = {}
+      const newAllOrders: Order[]  = raw.map(o => {
         const items: OrderItem[] = (o.order_items || []).map(oi => {
           const rawId = oi.item?.id
           const id    = rawId
@@ -193,21 +224,9 @@ export function AnalyticsProvider({ children }: { children: ReactNode }) {
             newOrderMap[id].qty     += Number(oi.quantity)   || 0
             newOrderMap[id].revenue += (Number(oi.quantity) || 0) * (Number(oi.unit_price) || 0)
           }
-          return {
-            mlItemId:  id,
-            quantity:  Number(oi.quantity)   || 0,
-            unitPrice: Number(oi.unit_price) || 0,
-            title:     oi.item?.title || '',
-          }
+          return { mlItemId: id, quantity: Number(oi.quantity) || 0, unitPrice: Number(oi.unit_price) || 0, title: oi.item?.title || '' }
         })
-        return {
-          id:            o.id,
-          dateCreated:   o.date_created,
-          buyerNickname: o.buyer?.nickname || '',
-          total:         Number(o.total_amount) || 0,
-          status:        o.status,
-          items,
-        }
+        return { id: o.id, dateCreated: o.date_created, buyerNickname: o.buyer?.nickname || '', total: Number(o.total_amount) || 0, status: o.status, items }
       })
 
       const payload: CachePayload = {
@@ -218,6 +237,8 @@ export function AnalyticsProvider({ children }: { children: ReactNode }) {
       }
 
       applyPayload(payload)
+      // Salva direto no localStorage (síncrono) E via serverSave (compatibilidade)
+      writeCacheSync(shopId, CACHE_KEY, payload)
       serverSave(CACHE_KEY, payload).catch(() => {})
 
       toast.success(
@@ -231,23 +252,25 @@ export function AnalyticsProvider({ children }: { children: ReactNode }) {
       loadingRef.current = false
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userId, mlConnected, products])
+  }, [userId, mlConnected, products, loaded, shopId])
 
-  // ── Auto-load: roda uma vez por sessão quando ML conecta + tem produtos ──
+  // ── Auto-load: só busca da API se cache expirou ou não existe ─────────────
   useEffect(() => {
     if (!mlConnected || !userId || !products.length) return
     if (initDoneRef.current) return
     initDoneRef.current = true
-    load(false)   // vai para cache se ainda válido, senão busca
+
+    // Verifica se cache ainda é válido — se sim, não faz nada
+    const cached = readCacheSync(shopId, CACHE_KEY)
+    if (cached) return  // já carregado no useState inicial
+
+    // Cache expirado ou inexistente → busca da API
+    load(false)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mlConnected, userId, products.length])
 
   return (
-    <AnalyticsContext.Provider value={{
-      visitMap, orderMap, allOrders,
-      loading, loaded, lastFetch,
-      load,
-    }}>
+    <AnalyticsContext.Provider value={{ visitMap, orderMap, allOrders, loading, loaded, lastFetch, load }}>
       {children}
     </AnalyticsContext.Provider>
   )
