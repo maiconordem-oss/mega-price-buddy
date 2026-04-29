@@ -188,7 +188,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // ── logout ────────────────────────────────────────────────────────────────
   const logout = useCallback(() => {
     setUser(null); setUserId(''); setMlUser(null); setConnected(false)
-    setShopSt(null); setShops([]); setToken(''); setShopId('')
+    setShopSt(null); setShops([]); setToken(''); setShopId(''); setMLUserId('')
     LS.del(SESSION_KEY)
   }, [])
 
