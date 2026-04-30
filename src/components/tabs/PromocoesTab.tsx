@@ -571,9 +571,240 @@ export function PromocoesTab() {
   const totalActive  = groups.reduce((s, g) => s + g.promos.filter(p => !p.isInvite).length, 0);
   const mlItems      = products.filter(p => p.mlItemId);
 
+  // Produtos SEM nenhuma promoção ativa (têm convites disponíveis)
+  const withoutActive = loaded
+    ? mlItems.filter(p => {
+        const g = groups.find(gr => gr.mlItemId === p.mlItemId);
+        if (!g) return false; // sem convites = não aparece
+        return g.promos.every(pr => pr.isInvite); // só convites, nenhuma ativa
+      })
+    : [];
+
+  // Convites SELLER_CAMPAIGN disponíveis para ativar em massa
+  const bulkCandidates = groups.filter(g =>
+    g.promos.some(p => p.isInvite && ["SELLER_CAMPAIGN","MARKETPLACE_CAMPAIGN","DEAL","DOD"].includes(p.promotionType))
+    && g.promos.every(p => p.isInvite) // nenhuma ativa ainda
+  );
+
+  const [bulkDiscount,    setBulkDiscount]    = useState(5);
+  const [bulkRunning,     setBulkRunning]     = useState(false);
+  const [bulkProgress,    setBulkProgress]    = useState({ done: 0, total: 0, errors: 0 });
+  const [showBulkConfirm, setShowBulkConfirm] = useState(false);
+
+  const handleBulkAccept = useCallback(async () => {
+    setShowBulkConfirm(false);
+    setBulkRunning(true);
+    const targets = bulkCandidates;
+    setBulkProgress({ done: 0, total: targets.length, errors: 0 });
+
+    let done = 0, errors = 0;
+
+    for (const g of targets) {
+      // Pega o melhor convite disponível (prefere SELLER_CAMPAIGN)
+      const promo = g.promos.find(p => p.isInvite && p.promotionType === "SELLER_CAMPAIGN")
+        || g.promos.find(p => p.isInvite && p.promotionType === "MARKETPLACE_CAMPAIGN")
+        || g.promos.find(p => p.isInvite);
+
+      if (!promo) { done++; setBulkProgress({ done, total: targets.length, errors }); continue; }
+
+      try {
+        const price     = promo.currentPrice || g.currentPrice;
+        const dealPrice = Math.round(price * (1 - bulkDiscount / 100) * 100) / 100;
+
+        // Valida range
+        if (promo.minPrice && dealPrice < promo.minPrice) {
+          // Usa o preço sugerido se o desconto escolhido for muito alto
+          const safeDeal = promo.suggestedPrice || promo.minPrice;
+          await proxyPost("POST",
+            `/seller-promotions/items/${g.mlItemId}?app_version=v2`,
+            { promotion_type: promo.promotionType, promotion_id: promo.promotionId, deal_price: safeDeal }
+          );
+        } else if (["SELLER_CAMPAIGN","DEAL","DOD","LIGHTNING"].includes(promo.promotionType)) {
+          await proxyPost("POST",
+            `/seller-promotions/items/${g.mlItemId}?app_version=v2`,
+            { promotion_type: promo.promotionType, promotion_id: promo.promotionId, deal_price: dealPrice }
+          );
+        } else {
+          await proxyPost("POST",
+            `/seller-promotions/items/${g.mlItemId}?app_version=v2`,
+            { promotion_type: promo.promotionType, promotion_id: promo.promotionId }
+          );
+        }
+
+        setGroups(prev => prev.map(gr => gr.mlItemId !== g.mlItemId ? gr : {
+          ...gr,
+          promos: gr.promos.map(p =>
+            p.promotionId !== promo.promotionId ? p
+              : { ...p, isInvite: false, status: "active" }
+          ),
+        }));
+      } catch (e) {
+        errors++;
+        console.warn(`[BULK] Erro ${g.mlItemId}:`, (e as Error).message);
+      }
+
+      done++;
+      setBulkProgress({ done, total: targets.length, errors });
+      // Delay entre chamadas para não sobrecarregar
+      await new Promise(r => setTimeout(r, 300));
+    }
+
+    setBulkRunning(false);
+    if (errors === 0) {
+      toast.success(`✓ ${done} promoções ativadas com ${bulkDiscount}%!`);
+    } else {
+      toast.warning(`${done - errors} ativadas · ${errors} com erro. Veja o console.`);
+    }
+  }, [bulkCandidates, bulkDiscount]);
+
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="space-y-4">
+
+      {/* ── Ativação em massa ────────────────────────────────────────────── */}
+      {loaded && bulkCandidates.length > 0 && (
+        <Card className="border-[#2D3277]/30 bg-[#E8EDFF]/30">
+          <CardContent className="p-4">
+            <div className="flex flex-wrap items-center gap-4">
+              <div className="flex-1 min-w-0">
+                <div className="font-semibold text-sm text-[#2D3277]">
+                  Ativar promoções em massa
+                </div>
+                <div className="text-xs text-muted-foreground mt-0.5">
+                  {bulkCandidates.length} produto{bulkCandidates.length > 1 ? "s" : ""} com convites disponíveis e sem promoção ativa
+                </div>
+              </div>
+
+              {/* Desconto */}
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-muted-foreground">Desconto:</span>
+                <div className="flex items-center border rounded-lg overflow-hidden">
+                  {[3, 5, 7, 10].map(pct => (
+                    <button key={pct}
+                      onClick={() => setBulkDiscount(pct)}
+                      className={`px-3 py-1.5 text-sm font-medium transition-colors ${bulkDiscount === pct ? "bg-[#2D3277] text-[#FFE600]" : "hover:bg-muted"}`}>
+                      {pct}%
+                    </button>
+                  ))}
+                  <div className="flex items-center border-l px-2">
+                    <input
+                      type="number" min={1} max={50} step={0.5}
+                      value={bulkDiscount}
+                      onChange={e => setBulkDiscount(parseFloat(e.target.value) || 5)}
+                      className="w-14 text-center text-sm py-1.5 outline-none"
+                    />
+                    <span className="text-sm text-muted-foreground pr-1">%</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Progresso ou botão */}
+              {bulkRunning ? (
+                <div className="flex items-center gap-3">
+                  <Loader2 className="h-4 w-4 animate-spin text-[#2D3277]" />
+                  <div className="text-sm">
+                    <span className="font-semibold text-[#2D3277]">{bulkProgress.done}</span>
+                    <span className="text-muted-foreground"> / {bulkProgress.total}</span>
+                    {bulkProgress.errors > 0 && (
+                      <span className="text-red-600 ml-2">{bulkProgress.errors} erro(s)</span>
+                    )}
+                  </div>
+                  <div className="w-32 h-2 bg-muted rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-[#2D3277] transition-all"
+                      style={{ width: `${(bulkProgress.done / bulkProgress.total) * 100}%` }}
+                    />
+                  </div>
+                </div>
+              ) : (
+                <Button
+                  className="bg-[#2D3277] text-[#FFE600] hover:bg-[#1e2456] font-semibold"
+                  onClick={() => setShowBulkConfirm(true)}
+                  disabled={bulkRunning}
+                >
+                  <Check className="h-4 w-4 mr-2" />
+                  Ativar {bulkCandidates.length} produto{bulkCandidates.length > 1 ? "s" : ""} com {bulkDiscount}%
+                </Button>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* ── Modal confirmação em massa ────────────────────────────────────── */}
+      {showBulkConfirm && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-background rounded-2xl shadow-2xl w-full max-w-md">
+            <div className="flex items-center justify-between px-6 py-4 border-b">
+              <h2 className="font-bold text-base">Confirmar ativação em massa</h2>
+              <button onClick={() => setShowBulkConfirm(false)} className="text-muted-foreground hover:text-foreground">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="px-6 py-5 space-y-4">
+              <div className="bg-[#E8EDFF]/60 rounded-xl p-4 space-y-2 text-sm">
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Produtos a ativar</span>
+                  <span className="font-bold text-[#2D3277]">{bulkCandidates.length}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Desconto aplicado</span>
+                  <span className="font-bold">{bulkDiscount}%</span>
+                </div>
+              </div>
+              <div className="text-xs text-muted-foreground space-y-1">
+                <p>• Será usado o melhor convite disponível por produto (prefere Campanha Vendedor)</p>
+                <p>• Se o desconto for maior que o mínimo permitido, usa o preço sugerido pela campanha</p>
+                <p>• Produtos que já têm promoção ativa serão ignorados</p>
+              </div>
+
+              {/* Preview dos primeiros produtos */}
+              <div className="border rounded-lg overflow-hidden">
+                <div className="bg-muted/50 px-3 py-2 text-xs font-medium text-muted-foreground">
+                  Produtos que serão ativados
+                </div>
+                <div className="max-h-40 overflow-y-auto">
+                  {bulkCandidates.slice(0, 8).map(g => {
+                    const promo = g.promos.find(p => p.isInvite && p.promotionType === "SELLER_CAMPAIGN")
+                      || g.promos.find(p => p.isInvite);
+                    const price = g.currentPrice;
+                    const deal  = Math.round(price * (1 - bulkDiscount / 100) * 100) / 100;
+                    const safe  = promo?.minPrice && deal < promo.minPrice ? promo.suggestedPrice || promo.minPrice : deal;
+                    return (
+                      <div key={g.mlItemId} className="flex items-center gap-2 px-3 py-2 border-t text-xs">
+                        <img src={g.image} alt="" className="h-7 w-7 rounded object-cover bg-muted shrink-0"
+                          onError={e => { (e.target as HTMLImageElement).style.display="none"; }} />
+                        <div className="flex-1 min-w-0 truncate">{g.name}</div>
+                        <div className="shrink-0 text-right">
+                          <span className="text-muted-foreground line-through mr-1">{BRL(price)}</span>
+                          <span className="font-semibold text-[#2D3277]">{BRL(safe)}</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {bulkCandidates.length > 8 && (
+                    <div className="px-3 py-2 text-xs text-muted-foreground border-t">
+                      +{bulkCandidates.length - 8} produtos...
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+            <div className="px-6 pb-6 flex gap-3">
+              <Button variant="outline" className="flex-1" onClick={() => setShowBulkConfirm(false)}>
+                Cancelar
+              </Button>
+              <Button
+                className="flex-1 bg-[#2D3277] text-[#FFE600] hover:bg-[#1e2456] font-bold"
+                onClick={handleBulkAccept}
+              >
+                <Check className="h-4 w-4 mr-2" />
+                Confirmar e ativar tudo
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* KPIs */}
       <div className="grid grid-cols-3 gap-3">
