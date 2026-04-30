@@ -10,7 +10,7 @@ import { useShopReset } from "@/hooks/useShopReset";
 import { toast } from "sonner";
 import {
   Loader2, RefreshCw, Search, Tag, Check, X,
-  ChevronDown, ChevronRight, ExternalLink,
+  ChevronDown, ChevronRight, ExternalLink, AlertTriangle,
 } from "lucide-react";
 
 // ── Tipos ─────────────────────────────────────────────────────────────────────
@@ -124,6 +124,13 @@ export function PromocoesTab() {
   const [filterStatus, setFilterStatus] = useState<"all" | "active" | "invite">("all");
   const [expanded,    setExpanded]    = useState<Set<string>>(new Set());
   const [actingKey,   setActingKey]   = useState<string | null>(null);
+  const [confirm,     setConfirm]     = useState<{
+    group: ProductGroup;
+    promo: Promo;
+    discountPct: number;   // percentual editável pelo usuário
+    finalPrice:  number;
+    youReceive:  number;
+  } | null>(null);
 
   useShopReset(useCallback(() => {
     setGroups([]); setLoaded(false); setExpanded(new Set());
@@ -464,45 +471,54 @@ export function PromocoesTab() {
   }, [products, userId, mlConnected, loaded]);
 
   // ── Aceitar / Recusar ─────────────────────────────────────────────────────
-  const handleAccept = useCallback(async (g: ProductGroup, promo: Promo) => {
+  // ── Abre modal de confirmação ─────────────────────────────────────────────
+  const openConfirm = useCallback((g: ProductGroup, promo: Promo) => {
+    const commission  = 0.12; // fallback — usar fee do produto se disponível
+    const discDec     = promo.discountPct || (promo.sellerPct || 0) + (promo.meliPct || 0) || 0.05;
+    const price       = promo.currentPrice || g.currentPrice;
+    const finalPrice  = promo.suggestedPrice || Math.round(price * (1 - discDec) * 100) / 100;
+    const youReceive  = Math.round(finalPrice * (1 - commission) * 100) / 100;
+    setConfirm({ group: g, promo, discountPct: discDec * 100, finalPrice, youReceive });
+  }, []);
+
+  // ── Recalcula quando usuário edita o % ────────────────────────────────────
+  const updateConfirmDiscount = useCallback((pct: number) => {
+    setConfirm(prev => {
+      if (!prev) return prev;
+      const commission = 0.12;
+      const price      = prev.promo.currentPrice || prev.group.currentPrice;
+      const finalPrice = Math.round(price * (1 - pct / 100) * 100) / 100;
+      const youReceive = Math.round(finalPrice * (1 - commission) * 100) / 100;
+      return { ...prev, discountPct: pct, finalPrice, youReceive };
+    });
+  }, []);
+
+  // ── Confirma participação ─────────────────────────────────────────────────
+  const handleAccept = useCallback(async (g: ProductGroup, promo: Promo, discountPct: number) => {
     const key = `${g.mlItemId}-${promo.promotionId}`;
     setActingKey(key);
+    setConfirm(null);
     try {
-      if (!promo.promotionId) {
-        throw new Error("ID da promoção não encontrado. Recarregue a lista.");
-      }
-      const type = promo.promotionType;
+      if (!promo.promotionId) throw new Error("ID da promoção não encontrado. Recarregue a lista.");
+
+      const type       = promo.promotionType;
+      const price      = promo.currentPrice || g.currentPrice;
+      const dealPrice  = Math.round(price * (1 - discountPct / 100) * 100) / 100;
 
       if (type === "PRICE_DISCOUNT") {
-        // PRICE_DISCOUNT usa PUT com o preço desejado
-        const dealPrice = promo.suggestedPrice || promo.minPrice || promo.currentPrice;
-        await proxyPost(
-          "PUT",
+        await proxyPost("PUT",
           `/seller-promotions/${promo.promotionId}/items/${g.mlItemId}?app_version=v2`,
           { price: dealPrice }
         );
       } else if (["DEAL", "DOD", "LIGHTNING"].includes(type)) {
-        // Campanhas com preço negociado — obrigatório enviar deal_price
-        const dealPrice = promo.suggestedPrice || promo.minPrice;
-        if (!dealPrice) throw new Error("Preço da promoção não disponível. Recarregue os dados.");
-        await proxyPost(
-          "POST",
+        await proxyPost("POST",
           `/seller-promotions/items/${g.mlItemId}?app_version=v2`,
-          {
-            promotion_type: type,
-            promotion_id:   promo.promotionId,
-            deal_price:     dealPrice,
-          }
+          { promotion_type: type, promotion_id: promo.promotionId, deal_price: dealPrice }
         );
       } else {
-        // MARKETPLACE_CAMPAIGN, SELLER_CAMPAIGN, VOLUME, etc.
-        await proxyPost(
-          "POST",
+        await proxyPost("POST",
           `/seller-promotions/items/${g.mlItemId}?app_version=v2`,
-          {
-            promotion_type: type,
-            promotion_id:   promo.promotionId,
-          }
+          { promotion_type: type, promotion_id: promo.promotionId }
         );
       }
 
@@ -515,11 +531,8 @@ export function PromocoesTab() {
       }));
     } catch (e) {
       const msg = (e as Error).message;
-      // Mostra mensagem mais útil
       if (msg.includes("invalid_promotion") || msg.includes("invalid promotion")) {
-        toast.error("Promoção inválida ou expirada. Recarregue a lista e tente novamente.");
-      } else if (msg.includes("deal_price")) {
-        toast.error("Preço da promoção necessário. Recarregue para obter o preço correto.");
+        toast.error("Promoção inválida ou expirada. Recarregue a lista.");
       } else {
         toast.error("Erro ao participar: " + msg);
       }
@@ -618,8 +631,139 @@ export function PromocoesTab() {
       )}
 
       {/* Lista de produtos com promoções */}
-      {filtered.map(g => {
-        const isOpen    = expanded.has(g.mlItemId);
+      {/* ── Modal de confirmação ─────────────────────────────────────────── */}
+      {confirm && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-background rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b">
+              <h2 className="font-bold text-base">Confirme os detalhes da promoção</h2>
+              <button onClick={() => setConfirm(null)} className="text-muted-foreground hover:text-foreground">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {/* Produto */}
+            <div className="px-6 py-4 bg-muted/30 flex items-center gap-3">
+              <img src={confirm.group.image} alt="" className="h-12 w-12 rounded-lg object-cover bg-muted shrink-0"
+                onError={e => { (e.target as HTMLImageElement).style.display="none"; }} />
+              <div>
+                <div className="font-semibold text-sm line-clamp-2">{confirm.group.name}</div>
+                <div className="text-xs text-muted-foreground mt-0.5">
+                  Estoque total: {confirm.group.stock} unidades
+                </div>
+              </div>
+            </div>
+
+            {/* Detalhes */}
+            <div className="px-6 py-4 space-y-2 text-sm">
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Promoção</span>
+                <span className="font-medium">{TYPE_LABEL[confirm.promo.promotionType] || confirm.promo.promotionType}</span>
+              </div>
+              {confirm.promo.name && confirm.promo.name !== TYPE_LABEL[confirm.promo.promotionType] && (
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Campanha</span>
+                  <span className="font-medium">{confirm.promo.name}</span>
+                </div>
+              )}
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Vigência</span>
+                <span>{fmtDate(confirm.promo.startDate)} a {fmtDate(confirm.promo.endDate)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Preço original</span>
+                <span className="font-semibold">{BRL(confirm.group.currentPrice)}</span>
+              </div>
+            </div>
+
+            <div className="px-6 pb-4 space-y-4">
+              {/* Desconto editável */}
+              <div className="border rounded-xl p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-muted-foreground">Desconto</span>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      min={confirm.promo.minPrice
+                        ? Math.round((1 - confirm.promo.minPrice / confirm.group.currentPrice) * 100 * 10) / 10
+                        : 1}
+                      max={50}
+                      step={0.5}
+                      value={confirm.discountPct.toFixed(1)}
+                      onChange={e => updateConfirmDiscount(parseFloat(e.target.value) || 0)}
+                      className="w-20 text-right border rounded-lg px-3 py-1.5 text-sm font-semibold focus:outline-none focus:border-[#2D3277]"
+                    />
+                    <span className="text-sm font-semibold">%</span>
+                  </div>
+                </div>
+                <div className="text-xs text-right text-muted-foreground">
+                  Equivale a {BRL(confirm.group.currentPrice - confirm.finalPrice)}
+                </div>
+                {confirm.promo.minPrice && (
+                  <div className="flex justify-between text-xs text-muted-foreground">
+                    <span>Desconto mínimo</span>
+                    <span>{((1 - confirm.promo.minPrice / confirm.group.currentPrice) * 100).toFixed(0)}%</span>
+                  </div>
+                )}
+                {confirm.promo.sellerPct && confirm.promo.meliPct && (
+                  <div className="flex justify-between text-xs">
+                    <span className="text-muted-foreground">Você paga</span>
+                    <span>{(confirm.promo.sellerPct * 100).toFixed(0)}% · ML paga {(confirm.promo.meliPct * 100).toFixed(0)}%</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Preço final e você recebe */}
+              <div className="border rounded-xl p-4 space-y-3">
+                <div className="flex justify-between text-sm">
+                  <span className="text-muted-foreground">Preço final</span>
+                  <div className="text-right">
+                    <div className="font-bold text-[#2D3277] text-lg">{BRL(confirm.finalPrice)}</div>
+                    <div className="text-xs text-muted-foreground line-through">{BRL(confirm.group.currentPrice)}</div>
+                  </div>
+                </div>
+                <div className="flex justify-between text-sm border-t pt-3">
+                  <span className="text-muted-foreground">Você recebe</span>
+                  <div className="text-right">
+                    <div className="font-bold text-green-700 text-lg">{BRL(confirm.youReceive)}</div>
+                    {confirm.promo.meliDiscount && confirm.promo.meliDiscount > 0 && (
+                      <div className="text-xs text-green-600">
+                        Reduzimos {BRL(confirm.promo.meliDiscount)} das suas tarifas
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Aviso se desconto fora do range */}
+              {confirm.promo.minPrice && confirm.finalPrice < confirm.promo.minPrice && (
+                <div className="flex items-center gap-2 text-xs text-orange-700 bg-orange-50 border border-orange-200 rounded-lg p-3">
+                  <AlertTriangle className="h-4 w-4 shrink-0" />
+                  Preço abaixo do mínimo permitido ({BRL(confirm.promo.minPrice)})
+                </div>
+              )}
+            </div>
+
+            {/* Botões */}
+            <div className="px-6 pb-6 flex gap-3">
+              <Button variant="outline" className="flex-1" onClick={() => setConfirm(null)}>
+                Cancelar
+              </Button>
+              <Button
+                className="flex-1 bg-[#2D3277] hover:bg-[#1e2456] text-[#FFE600] font-bold"
+                disabled={!!actingKey || (!!confirm.promo.minPrice && confirm.finalPrice < confirm.promo.minPrice)}
+                onClick={() => handleAccept(confirm.group, confirm.promo, confirm.discountPct)}
+              >
+                {actingKey ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Check className="h-4 w-4 mr-2" />}
+                Confirmar participação
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {filtered.map(g => {        const isOpen    = expanded.has(g.mlItemId);
         const invites   = g.promos.filter(p => p.isInvite);
         const actives   = g.promos.filter(p => !p.isInvite);
 
@@ -789,7 +933,7 @@ export function PromocoesTab() {
                               <div className="flex items-center gap-1.5 justify-end">
                                 <Button size="sm"
                                   className="bg-[#2D3277] hover:bg-[#1e2456] text-[#FFE600] h-7 text-xs px-3"
-                                  onClick={() => handleAccept(g, promo)}
+                                  onClick={() => openConfirm(g, promo)}
                                   disabled={!!actingKey}>
                                   {acting ? <Loader2 className="h-3 w-3 animate-spin" /> : "Participar"}
                                 </Button>
