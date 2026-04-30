@@ -302,7 +302,6 @@ export function PromocoesTab() {
           const commission = (listing?.fee || 12) / 100;
 
           const promos = (promoByItem[p.mlItemId!] || []).map(promo => {
-            // sellerPct e meliPct vêm como decimal (0.10 = 10%)
             // discountPct pode vir como decimal ou inteiro dependendo do endpoint
             const sellerDec = promo.sellerPct || 0   // ex: 0.10
             const meliDec   = promo.meliPct   || 0   // ex: 0.05
@@ -331,6 +330,10 @@ export function PromocoesTab() {
             // discountPct final em decimal para exibição
             const displayDiscDec = bestDec || (finalP && price > 0 ? 1 - finalP / price : 0)
 
+            // Filtra promoções com desconto absurdo (>50% = dado inválido da API)
+            const MAX_DISCOUNT = 0.50
+            if (displayDiscDec && displayDiscDec > MAX_DISCOUNT) return null
+
             return {
               ...promo,
               currentPrice:  price,
@@ -341,7 +344,7 @@ export function PromocoesTab() {
               sellerPct:     sellerDec,
               meliPct:       meliDec,
             }
-          });
+          }).filter((p): p is NonNullable<typeof p> => p !== null);
           return {
             mlItemId:     p.mlItemId!,
             name:         p.name,
