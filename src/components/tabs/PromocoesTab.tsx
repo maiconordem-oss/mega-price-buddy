@@ -386,21 +386,64 @@ export function PromocoesTab() {
     const key = `${g.mlItemId}-${promo.promotionId}`;
     setActingKey(key);
     try {
-      const body: Record<string, unknown> = {
-        promotion_type: promo.promotionType,
-        promotion_id:   promo.promotionId,
-      };
-      if (["DEAL","DOD","LIGHTNING"].includes(promo.promotionType) && promo.suggestedPrice) {
-        body.deal_price = promo.suggestedPrice;
+      if (!promo.promotionId) {
+        throw new Error("ID da promoção não encontrado. Recarregue a lista.");
       }
-      await proxyPost("POST", `/seller-promotions/items/${g.mlItemId}?app_version=v2`, body);
+      const type = promo.promotionType;
+
+      if (type === "PRICE_DISCOUNT") {
+        // PRICE_DISCOUNT usa PUT com o preço desejado
+        const dealPrice = promo.suggestedPrice || promo.minPrice || promo.currentPrice;
+        await proxyPost(
+          "PUT",
+          `/seller-promotions/${promo.promotionId}/items/${g.mlItemId}?app_version=v2`,
+          { price: dealPrice }
+        );
+      } else if (["DEAL", "DOD", "LIGHTNING"].includes(type)) {
+        // Campanhas com preço negociado — obrigatório enviar deal_price
+        const dealPrice = promo.suggestedPrice || promo.minPrice;
+        if (!dealPrice) throw new Error("Preço da promoção não disponível. Recarregue os dados.");
+        await proxyPost(
+          "POST",
+          `/seller-promotions/items/${g.mlItemId}?app_version=v2`,
+          {
+            promotion_type: type,
+            promotion_id:   promo.promotionId,
+            deal_price:     dealPrice,
+          }
+        );
+      } else {
+        // MARKETPLACE_CAMPAIGN, SELLER_CAMPAIGN, VOLUME, etc.
+        await proxyPost(
+          "POST",
+          `/seller-promotions/items/${g.mlItemId}?app_version=v2`,
+          {
+            promotion_type: type,
+            promotion_id:   promo.promotionId,
+          }
+        );
+      }
+
       toast.success("Participando da promoção!");
       setGroups(prev => prev.map(gr => gr.mlItemId !== g.mlItemId ? gr : {
         ...gr,
-        promos: gr.promos.map(p => p.promotionId !== promo.promotionId ? p : { ...p, isInvite: false, status: "active" })
+        promos: gr.promos.map(p =>
+          p.promotionId !== promo.promotionId ? p : { ...p, isInvite: false, status: "active" }
+        ),
       }));
-    } catch (e) { toast.error("Erro: " + (e as Error).message); }
-    finally { setActingKey(null); }
+    } catch (e) {
+      const msg = (e as Error).message;
+      // Mostra mensagem mais útil
+      if (msg.includes("invalid_promotion") || msg.includes("invalid promotion")) {
+        toast.error("Promoção inválida ou expirada. Recarregue a lista e tente novamente.");
+      } else if (msg.includes("deal_price")) {
+        toast.error("Preço da promoção necessário. Recarregue para obter o preço correto.");
+      } else {
+        toast.error("Erro ao participar: " + msg);
+      }
+    } finally {
+      setActingKey(null);
+    }
   }, []);
 
   const handleDecline = useCallback(async (g: ProductGroup, promo: Promo) => {
