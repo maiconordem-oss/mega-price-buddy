@@ -37,7 +37,10 @@ export function HistoricoTab() {
     return list
   }, [allOrders, days, statusFilter, search])
 
-  const totalRevenue = filtered.reduce((s, o) => s + o.total, 0)
+  // Usa soma de unitPrice × qty (igual à aba Visitas & Vendas)
+  // total_amount do ML inclui frete pago pelo comprador, gerando divergência
+  const totalRevenue = filtered.reduce((s, o) =>
+    s + o.items.reduce((a, i) => a + i.quantity * i.unitPrice, 0), 0)
 
   return (
     <div className="space-y-5">
@@ -46,7 +49,7 @@ export function HistoricoTab() {
         <StatCard icon={<Package />} label="Pedidos" value={filtered.length.toLocaleString("pt-BR")} />
         <StatCard icon={<Package />} label="Itens vendidos"
           value={filtered.reduce((s, o) => s + o.items.reduce((a, i) => a + i.quantity, 0), 0).toLocaleString("pt-BR")} />
-        <StatCard icon={<Package />} label="Faturamento" value={BRL(totalRevenue)} />
+        <StatCard icon={<Package />} label="Faturamento (produtos)" value={BRL(totalRevenue)} />
       </div>
 
       {/* Toolbar */}
@@ -126,7 +129,9 @@ export function HistoricoTab() {
                         </div>
                       ))}
                     </td>
-                    <td className="px-3 py-2 font-semibold whitespace-nowrap">{BRL(order.total)}</td>
+                    <td className="px-3 py-2 font-semibold whitespace-nowrap">
+                        {BRL(order.items.reduce((s, i) => s + i.quantity * i.unitPrice, 0))}
+                      </td>
                     <td className="px-3 py-2">
                       <Badge className={s.cls}>{s.label}</Badge>
                     </td>

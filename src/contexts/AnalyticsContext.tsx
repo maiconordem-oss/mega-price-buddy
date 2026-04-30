@@ -283,7 +283,10 @@ export function AnalyticsProvider({ children }: { children: ReactNode }) {
           }
           return { mlItemId: id, quantity: Number(oi.quantity) || 0, unitPrice: Number(oi.unit_price) || 0, title: oi.item?.title || '' }
         })
-        return { id: o.id, dateCreated: o.date_created, buyerNickname: o.buyer?.nickname || '', total: Number(o.total_amount) || 0, status: o.status, items }
+        // total = soma dos itens (unitPrice × qty), NÃO total_amount
+        // total_amount inclui frete pago pelo comprador e difere do faturamento real do produto
+        const itemsTotal = items.reduce((s, i) => s + i.quantity * i.unitPrice, 0)
+        return { id: o.id, dateCreated: o.date_created, buyerNickname: o.buyer?.nickname || '', total: itemsTotal, status: o.status, items }
       })
 
       const payload: CachePayload = {
