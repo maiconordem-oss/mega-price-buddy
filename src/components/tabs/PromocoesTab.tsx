@@ -233,52 +233,134 @@ export function PromocoesTab() {
           await Promise.all(batch.map(async p => {
             try {
               const raw   = await ml(`/seller-promotions/items/${p.mlItemId}?app_version=v2`);
+
+              // Log dos primeiros itens para diagnóstico
+              if (Object.keys(promoByItem).length < 3) {
+                console.log(`[PROMO] ${p.mlItemId}:`, JSON.stringify(raw, null, 2));
+              }
+
               const items = extractPromos(raw);
               const id    = p.mlItemId!;
+              const price = p.listings.find(l => l.channel === "ml")?.currentPrice || 0;
 
               const promos: Promo[] = [];
               for (const item of items) {
-                const o         = item as Record<string, unknown>;
-                const type      = String(o.promotion_type || "");
+                const o = item as Record<string, unknown>;
+
+                // ── Tipo e status ──────────────────────────────────────────
+                const type      = String(o.promotion_type || o.type || "");
+                if (!type || IGNORE_TYPES.includes(type)) continue;
+
                 const statusStr = getStatusStr(o.status);
-                if (IGNORE_TYPES.includes(type)) continue;
-                const isInvite = ["candidate","invited","pending"].includes(statusStr);
-                const isActive = ["started","active"].includes(statusStr);
+                const isInvite  = ["candidate","invited","pending"].includes(statusStr);
+                const isActive  = ["started","active"].includes(statusStr);
                 if (!isInvite && !isActive && statusStr !== "paused") continue;
 
-                const deadline = o.deadline_date as string | undefined;
-                const finish   = (o.finish_date || o.end_date) as string | undefined;
+                const deadline = (o.deadline_date || o.offer_deadline) as string | undefined;
+                const start    = (o.start_date || o.date_from)    as string | undefined;
+                const finish   = (o.finish_date || o.end_date || o.date_to) as string | undefined;
+
                 if (isInvite) {
                   if (deadline && new Date(deadline) < new Date()) continue;
                   if (finish   && new Date(finish)   < new Date()) continue;
                   if ((type === "PRICE_DISCOUNT" || type === "LIGHTNING") && !deadline) continue;
                 }
 
+                // ── ID da promoção ─────────────────────────────────────────
+                // A API pode retornar id como número, string, ou dentro de sub-objetos
+                const promoId = String(
+                  o.id || o.promotion_id || o.deal_id || o.campaign_id || ""
+                );
+
+                // ── Nome ───────────────────────────────────────────────────
+                // 'name' pode ser número 0 (campo ausente), string, ou em sub-campo
+                const rawName = o.name || o.campaign_name || o.deal_name || o.title;
+                const name = rawName && typeof rawName === "string" && rawName !== "0"
+                  ? rawName
+                  : TYPE_LABEL[type] || type;
+
+                // ── Desconto ───────────────────────────────────────────────
+                // A API v2 pode ter estrutura aninhada: { discount: { percentage, type } }
+                const discObj = o.discount as Record<string, unknown> | undefined;
+                let discountPct = (
+                  o.discount_percentage
+                  || discObj?.percentage
+                  || discObj?.value
+                  || o.percentage
+                  || o.offer_percentage
+                ) as number | undefined;
+
+                // sellerPct: pode estar em seller_percentage ou offer.seller_percentage
+                const offerObj = o.offer as Record<string, unknown> | undefined;
+                let sellerPct = (
+                  o.seller_percentage
+                  || offerObj?.seller_percentage
+                  || o.seller_discount_percentage
+                ) as number | undefined;
+
+                let meliPct = (
+                  o.meli_percentage
+                  || offerObj?.meli_percentage
+                  || o.meli_discount_percentage
+                ) as number | undefined;
+
+                // ── Preços ─────────────────────────────────────────────────
+                const priceObj = o.price as Record<string, unknown> | undefined;
+                let minPrice = (
+                  o.min_discounted_price
+                  || o.minimum_price
+                  || priceObj?.min
+                ) as number | undefined;
+
+                let maxPrice = (
+                  o.max_discounted_price
+                  || o.maximum_price
+                  || priceObj?.max
+                ) as number | undefined;
+
+                let suggestedPrice = (
+                  o.suggested_discounted_price
+                  || o.suggested_price
+                  || o.deal_price
+                  || priceObj?.suggested
+                ) as number | undefined;
+
+                // ── Normaliza decimais vs inteiros ─────────────────────────
+                // sellerPct e meliPct: se > 1, é percentual inteiro (ex: 13 = 13%)
+                // se < 1, é decimal (ex: 0.13 = 13%)
+                if (sellerPct !== undefined && sellerPct > 1) sellerPct = sellerPct / 100;
+                if (meliPct   !== undefined && meliPct   > 1) meliPct   = meliPct   / 100;
+                if (discountPct !== undefined && discountPct > 1) discountPct = discountPct / 100;
+
+                // ── Calcula preço final se não veio da API ─────────────────
+                const totalDisc = (sellerPct || 0) + (meliPct || 0) || discountPct || 0;
+                if (!suggestedPrice && totalDisc > 0 && price > 0) {
+                  suggestedPrice = Math.round(price * (1 - totalDisc) * 100) / 100;
+                }
+
                 promos.push({
-                  promotionId:    String(o.id || ""),
+                  promotionId:    promoId,
                   promotionType:  type,
-                  name:           String(o.name || TYPE_LABEL[type] || type),
+                  name,
                   status:         statusStr,
                   isInvite,
-                  startDate:      o.start_date as string | undefined,
+                  startDate:      start,
                   endDate:        finish,
                   deadlineDate:   deadline,
-                  discountPct:    o.discount_percentage as number | undefined,
-                  sellerPct:      o.seller_percentage as number | undefined,
-                  meliPct:        o.meli_percentage as number | undefined,
-                  minPrice:       o.min_discounted_price as number | undefined,
-                  maxPrice:       o.max_discounted_price as number | undefined,
-                  suggestedPrice: o.suggested_discounted_price as number | undefined,
-                  currentPrice:   p.listings.find(l => l.channel === "ml")?.currentPrice,
+                  discountPct:    discountPct || totalDisc || undefined,
+                  sellerPct,
+                  meliPct,
+                  minPrice,
+                  maxPrice,
+                  suggestedPrice,
+                  currentPrice:   price,
                 });
               }
 
-              // Acesso thread-safe ao objeto compartilhado
               if (promos.length > 0) {
                 promoByItem[id] = (promoByItem[id] || []).concat(promos);
               }
 
-              // Atualiza contador em tempo real
               const done = Object.keys(promoByItem).length;
               setLoadingStep(`${done} / ${total} produtos processados...`);
 
