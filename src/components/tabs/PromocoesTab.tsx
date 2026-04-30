@@ -254,8 +254,12 @@ export function PromocoesTab() {
               for (const item of items) {
                 const o = item as Record<string, unknown>;
 
-                // ── Tipo e status ──────────────────────────────────────────
-                const type      = String(o.promotion_type || o.type || "");
+                // ── Estrutura real da API ML (confirmada via log) ──────
+                // type vem como "type" (não "promotion_type") neste endpoint
+                // price = preço final já calculado; original_price = preço do produto
+                // seller_percentage e meli_percentage = percentual direto (ex: 2.4 = 2.4%)
+                // id ausente em PRICE_DISCOUNT — usar ref_id como fallback
+                const type = String(o.promotion_type || o.type || "");
                 if (!type || IGNORE_TYPES.includes(type)) continue;
 
                 const statusStr = getStatusStr(o.status);
@@ -264,86 +268,59 @@ export function PromocoesTab() {
                 if (!isInvite && !isActive && statusStr !== "paused") continue;
 
                 const deadline = (o.deadline_date || o.offer_deadline) as string | undefined;
-                const start    = (o.start_date || o.date_from)    as string | undefined;
+                const start    = (o.start_date || o.date_from) as string | undefined;
                 const finish   = (o.finish_date || o.end_date || o.date_to) as string | undefined;
 
                 if (isInvite) {
                   if (deadline && new Date(deadline) < new Date()) continue;
                   if (finish   && new Date(finish)   < new Date()) continue;
-                  if ((type === "PRICE_DISCOUNT" || type === "LIGHTNING") && !deadline) continue;
                 }
 
-                // ── ID da promoção ─────────────────────────────────────────
-                // A API pode retornar id como número, string, ou dentro de sub-objetos
-                const promoId = String(
-                  o.id || o.promotion_id || o.deal_id || o.campaign_id || ""
-                );
+                // ── ID ─────────────────────────────────────────────────────
+                // PRICE_DISCOUNT não tem id — usa ref_id como fallback
+                const promoId = String(o.id || o.ref_id || o.promotion_id || o.campaign_id || "");
 
                 // ── Nome ───────────────────────────────────────────────────
-                // 'name' pode ser número 0 (campo ausente), string, ou em sub-campo
-                const rawName = o.name || o.campaign_name || o.deal_name || o.title;
-                const name = rawName && typeof rawName === "string" && rawName !== "0"
+                const rawName = o.name;
+                const name = (rawName && typeof rawName === "string" && rawName.trim() !== "")
                   ? rawName
                   : TYPE_LABEL[type] || type;
 
-                // ── Desconto ───────────────────────────────────────────────
-                // A API v2 pode ter estrutura aninhada: { discount: { percentage, type } }
-                const discObj = o.discount as Record<string, unknown> | undefined;
-                let discountPct = (
-                  o.discount_percentage
-                  || discObj?.percentage
-                  || discObj?.value
-                  || o.percentage
-                  || o.offer_percentage
-                ) as number | undefined;
+                // ── Percentuais (API retorna em % direto, ex: 2.4 = 2.4%) ──
+                // Normaliza para decimal (0.024) para cálculos internos
+                const rawSeller = o.seller_percentage as number | undefined;
+                const rawMeli   = o.meli_percentage   as number | undefined;
+                const rawFixed  = o.fixed_percentage  as number | undefined; // SELLER_COUPON_CAMPAIGN
 
-                // sellerPct: pode estar em seller_percentage ou offer.seller_percentage
-                const offerObj = o.offer as Record<string, unknown> | undefined;
-                let sellerPct = (
-                  o.seller_percentage
-                  || offerObj?.seller_percentage
-                  || o.seller_discount_percentage
-                ) as number | undefined;
+                const sellerPct = rawSeller != null ? rawSeller / 100 : undefined;
+                const meliPct   = rawMeli   != null ? rawMeli   / 100 : undefined;
+                const fixedPct  = rawFixed  != null ? rawFixed  / 100 : undefined;
 
-                let meliPct = (
-                  o.meli_percentage
-                  || offerObj?.meli_percentage
-                  || o.meli_discount_percentage
-                ) as number | undefined;
+                // totalDisc em decimal
+                const totalDisc = (sellerPct || 0) + (meliPct || 0) || fixedPct || 0;
 
                 // ── Preços ─────────────────────────────────────────────────
-                const priceObj = o.price as Record<string, unknown> | undefined;
-                let minPrice = (
-                  o.min_discounted_price
-                  || o.minimum_price
-                  || priceObj?.min
-                ) as number | undefined;
+                // original_price = preço do produto (fonte de verdade)
+                // price = preço final calculado pela API (0 quando é convite sem preço fixo)
+                const originalPrice = (o.original_price as number | undefined) || price;
+                const apiPrice      = o.price as number | undefined;
 
-                let maxPrice = (
-                  o.max_discounted_price
-                  || o.maximum_price
-                  || priceObj?.max
-                ) as number | undefined;
+                const minPrice        = o.min_discounted_price        as number | undefined;
+                const maxPrice        = o.max_discounted_price        as number | undefined;
+                let   suggestedPrice  = o.suggested_discounted_price  as number | undefined;
 
-                let suggestedPrice = (
-                  o.suggested_discounted_price
-                  || o.suggested_price
-                  || o.deal_price
-                  || priceObj?.suggested
-                ) as number | undefined;
-
-                // ── Normaliza decimais vs inteiros ─────────────────────────
-                // sellerPct e meliPct: se > 1, é percentual inteiro (ex: 13 = 13%)
-                // se < 1, é decimal (ex: 0.13 = 13%)
-                if (sellerPct !== undefined && sellerPct > 1) sellerPct = sellerPct / 100;
-                if (meliPct   !== undefined && meliPct   > 1) meliPct   = meliPct   / 100;
-                if (discountPct !== undefined && discountPct > 1) discountPct = discountPct / 100;
-
-                // ── Calcula preço final se não veio da API ─────────────────
-                const totalDisc = (sellerPct || 0) + (meliPct || 0) || discountPct || 0;
-                if (!suggestedPrice && totalDisc > 0 && price > 0) {
-                  suggestedPrice = Math.round(price * (1 - totalDisc) * 100) / 100;
+                // Se a API retornou price > 0 e é menor que original = é o preço final
+                if (!suggestedPrice && apiPrice && apiPrice > 0 && apiPrice < originalPrice) {
+                  suggestedPrice = apiPrice;
                 }
+                // Calcula pelo desconto se ainda não tem
+                if (!suggestedPrice && totalDisc > 0 && originalPrice > 0) {
+                  suggestedPrice = Math.round(originalPrice * (1 - totalDisc) * 100) / 100;
+                }
+
+                // discountPct em decimal para exibição
+                const discountPct = totalDisc ||
+                  (suggestedPrice && originalPrice > 0 ? 1 - suggestedPrice / originalPrice : undefined);
 
                 promos.push({
                   promotionId:    promoId,
@@ -354,13 +331,13 @@ export function PromocoesTab() {
                   startDate:      start,
                   endDate:        finish,
                   deadlineDate:   deadline,
-                  discountPct:    discountPct || totalDisc || undefined,
+                  discountPct,
                   sellerPct,
                   meliPct,
                   minPrice,
                   maxPrice,
                   suggestedPrice,
-                  currentPrice:   price,
+                  currentPrice:   originalPrice,
                 });
               }
 
@@ -391,47 +368,34 @@ export function PromocoesTab() {
           const commission = (listing?.fee || 12) / 100;
 
           const promos = (promoByItem[p.mlItemId!] || []).map(promo => {
-            // discountPct pode vir como decimal ou inteiro dependendo do endpoint
-            const sellerDec = promo.sellerPct || 0   // ex: 0.10
-            const meliDec   = promo.meliPct   || 0   // ex: 0.05
-            const totalDec  = sellerDec + meliDec     // ex: 0.15 = 15%
+            // Parser já normalizou tudo para decimal e original_price
+            // Aqui só calculamos finalPrice e youReceive para exibição
 
-            // discountPct: normaliza para decimal
-            let discDec = promo.discountPct || 0
-            if (discDec > 1) discDec = discDec / 100  // veio como inteiro (ex: 10 → 0.10)
+            const itemPrice  = promo.currentPrice || listing?.currentPrice || 0
+            const discDec    = promo.discountPct || 0
+            const sellerDec  = promo.sellerPct   || 0
+            const meliDec    = promo.meliPct     || 0
 
-            // Usa o maior desconto disponível para calcular preço final
-            const bestDec = discDec || totalDec
+            // Filtra desconto absurdo
+            if (discDec > 0.50) return null
 
-            // Preço final: preferência para suggestedPrice da API, depois calcula
-            const finalP = promo.suggestedPrice
-              || promo.minPrice  // min = maior desconto possível
-              || (bestDec > 0 ? Math.round(price * (1 - bestDec) * 100) / 100 : undefined)
+            const finalP  = promo.suggestedPrice
+              || (discDec > 0 ? Math.round(itemPrice * (1 - discDec) * 100) / 100 : undefined)
 
-            // O que você recebe = preço final menos comissão ML
-            const youGet = finalP ? Math.round(finalP * (1 - commission) * 100) / 100 : undefined
+            const youGet  = finalP
+              ? Math.round(finalP * (1 - commission) * 100) / 100
+              : undefined
 
-            // Quanto o ML reduz das tarifas (subsidio)
             const meliDisc = meliDec > 0 && finalP
               ? Math.round(finalP * commission * meliDec * 100) / 100
               : undefined
 
-            // discountPct final em decimal para exibição
-            const displayDiscDec = bestDec || (finalP && price > 0 ? 1 - finalP / price : 0)
-
-            // Filtra promoções com desconto absurdo (>50% = dado inválido da API)
-            const MAX_DISCOUNT = 0.50
-            if (displayDiscDec && displayDiscDec > MAX_DISCOUNT) return null
-
             return {
               ...promo,
-              currentPrice:  price,
+              currentPrice:  itemPrice,
               finalPrice:    finalP,
               youReceive:    youGet,
               meliDiscount:  meliDisc,
-              discountPct:   displayDiscDec,  // sempre decimal agora
-              sellerPct:     sellerDec,
-              meliPct:       meliDec,
             }
           }).filter((p): p is NonNullable<typeof p> => p !== null);
           return {
@@ -473,13 +437,17 @@ export function PromocoesTab() {
   // ── Aceitar / Recusar ─────────────────────────────────────────────────────
   // ── Abre modal de confirmação ─────────────────────────────────────────────
   const openConfirm = useCallback((g: ProductGroup, promo: Promo) => {
-    const commission  = 0.12; // fallback — usar fee do produto se disponível
-    const discDec     = promo.discountPct || (promo.sellerPct || 0) + (promo.meliPct || 0) || 0.05;
-    const price       = promo.currentPrice || g.currentPrice;
-    const finalPrice  = promo.suggestedPrice || Math.round(price * (1 - discDec) * 100) / 100;
-    const youReceive  = Math.round(finalPrice * (1 - commission) * 100) / 100;
-    setConfirm({ group: g, promo, discountPct: discDec * 100, finalPrice, youReceive });
-  }, []);
+    const price      = promo.currentPrice || g.currentPrice
+    // discountPct já está em decimal (ex: 0.05 = 5%)
+    const discDec    = promo.discountPct || (promo.sellerPct || 0) + (promo.meliPct || 0) || 0.05
+    const finalPrice = promo.suggestedPrice
+      || Math.round(price * (1 - discDec) * 100) / 100
+    // comissão ML: usar fee do listing ou 12% como fallback
+    const listing    = g.promos.length > 0 ? null : null // placeholder
+    const commission = 0.12
+    const youReceive = Math.round(finalPrice * (1 - commission) * 100) / 100
+    setConfirm({ group: g, promo, discountPct: discDec * 100, finalPrice, youReceive })
+  }, [])
 
   // ── Recalcula quando usuário edita o % ────────────────────────────────────
   const updateConfirmDiscount = useCallback((pct: number) => {
