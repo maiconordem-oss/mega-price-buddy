@@ -63,8 +63,15 @@ export function PrecificacaoTab() {
   }, 5 * 60 * 1000, !!userId);
 
   const rows = useMemo(() => {
-    return products.map((p) => ({ product: p, row: computePricingRow(p, params) }));
-  }, [products, params]);
+    return products.map((p) => {
+      // Se tem promoção ativa no ML e não tem promoPrice manual, usa o preço da promo
+      const activePromo = p.mlItemId ? activePromos[p.mlItemId] : null;
+      const effectiveProduct = activePromo && !(p.promoPrice ?? 0)
+        ? { ...p, promoPrice: activePromo.finalPrice }
+        : p;
+      return { product: p, row: computePricingRow(effectiveProduct, params) };
+    });
+  }, [products, params, activePromos]);
 
   const filtered = useMemo(() => {
     let list = rows;
@@ -426,57 +433,62 @@ export function PrecificacaoTab() {
 
                     {/* Preço venda */}
                     <td className="px-2 py-1.5">
-                      {/* Promoção ativa do ML (vem da aba Promoções) */}
-                      {(() => {
-                        const activePromo = p.mlItemId ? activePromos[p.mlItemId] : null;
-                        if (activePromo) {
-                          return (
-                            <div className="mb-1 p-1.5 rounded bg-green-50 border border-green-200">
-                              <div className="flex items-center gap-1 mb-0.5">
-                                <Tag className="h-2.5 w-2.5 text-green-600 shrink-0" />
-                                <span className="text-[9px] text-green-700 font-bold truncate max-w-[80px]" title={activePromo.name}>
-                                  {activePromo.name}
-                                </span>
-                              </div>
-                              <div className="text-green-700 font-bold font-mono text-[11px]">{BRL(activePromo.finalPrice)}</div>
-                              <div className="text-[9px] text-green-600">
-                                -{(activePromo.discountPct * 100).toFixed(0)}% · ATIVA
-                              </div>
-                            </div>
-                          );
-                        }
-                        return null;
-                      })()}
-
                       {(p.promoPrice ?? 0) > 0 ? (
                         <div>
                           <div className="line-through text-gray-400 text-[10px] font-mono">{BRL(mlPrice)}</div>
                           <div className="text-red-600 font-bold font-mono">{BRL(p.promoPrice!)}</div>
                           <span className="text-[9px] bg-red-50 text-red-600 px-1 rounded font-bold">PROMO</span>
                         </div>
-                      ) : (
-                        <span className="font-bold font-mono">{BRL(mlPrice)}</span>
-                      )}
+                      ) : (() => {
+                        const activePromo = p.mlItemId ? activePromos[p.mlItemId] : null;
+                        if (activePromo) {
+                          return (
+                            <div>
+                              <div className="line-through text-gray-400 text-[10px] font-mono">{BRL(mlPrice)}</div>
+                              <div className="text-green-700 font-bold font-mono">{BRL(activePromo.finalPrice)}</div>
+                              <span className="text-[9px] bg-green-50 text-green-700 px-1 rounded font-bold">PROMO ML</span>
+                            </div>
+                          );
+                        }
+                        return <span className="font-bold font-mono">{BRL(mlPrice)}</span>;
+                      })()}
                       {/* Input promo */}
                       <div className="flex items-center gap-1 mt-1">
-                        <span className="text-[9px] text-gray-400 font-bold">PROMO</span>
-                        <input
-                          type="number" min="0" step="0.01" placeholder="—"
-                          className="w-16 px-1.5 py-0.5 border rounded text-[10px] font-mono bg-gray-50 outline-none"
-                          style={{ borderColor: (p.promoPrice ?? 0) > 0 ? "#f5c6c2" : undefined }}
-                          value={p.promoPrice || ""}
-                          disabled={p.promoLocked}
-                          onChange={(e) => {
-                            updateProduct(p.sku, { promoPrice: e.target.value ? +e.target.value : undefined });
-                            debouncedSave();
-                          }}
-                        />
-                        <button
-                          onClick={() => { updateProduct(p.sku, { promoLocked: !p.promoLocked }); debouncedSave(); }}
-                          className="text-[10px] px-1 py-0.5 rounded border cursor-pointer"
-                          style={{ background: p.promoLocked ? "#c0392b" : "transparent", color: p.promoLocked ? "#fff" : "#c0392b", borderColor: p.promoLocked ? "#c0392b" : "#f5c6c2" }}>
-                          {p.promoLocked ? "🔒" : "🔓"}
-                        </button>
+                        {(() => {
+                          const activePromo = p.mlItemId ? activePromos[p.mlItemId] : null;
+                          if (activePromo && !(p.promoPrice ?? 0)) {
+                            return (
+                              <div className="flex items-center gap-1 flex-1">
+                                <Tag className="h-2.5 w-2.5 text-green-600 shrink-0" />
+                                <span className="text-[9px] text-green-700 font-bold truncate max-w-[90px]" title={activePromo.name}>
+                                  {activePromo.name} -{(activePromo.discountPct * 100).toFixed(0)}%
+                                </span>
+                              </div>
+                            );
+                          }
+                          return (
+                            <>
+                              <span className="text-[9px] text-gray-400 font-bold">PROMO</span>
+                              <input
+                                type="number" min="0" step="0.01" placeholder="—"
+                                className="w-16 px-1.5 py-0.5 border rounded text-[10px] font-mono bg-gray-50 outline-none"
+                                style={{ borderColor: (p.promoPrice ?? 0) > 0 ? "#f5c6c2" : undefined }}
+                                value={p.promoPrice || ""}
+                                disabled={p.promoLocked}
+                                onChange={(e) => {
+                                  updateProduct(p.sku, { promoPrice: e.target.value ? +e.target.value : undefined });
+                                  debouncedSave();
+                                }}
+                              />
+                              <button
+                                onClick={() => { updateProduct(p.sku, { promoLocked: !p.promoLocked }); debouncedSave(); }}
+                                className="text-[10px] px-1 py-0.5 rounded border cursor-pointer"
+                                style={{ background: p.promoLocked ? "#c0392b" : "transparent", color: p.promoLocked ? "#fff" : "#c0392b", borderColor: p.promoLocked ? "#c0392b" : "#f5c6c2" }}>
+                                {p.promoLocked ? "🔒" : "🔓"}
+                              </button>
+                            </>
+                          );
+                        })()}
                       </div>
                       {/* +1% +2% */}
                       <div className="flex items-center gap-1 mt-1">
