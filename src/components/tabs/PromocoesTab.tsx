@@ -216,19 +216,29 @@ export function PromocoesTab() {
       // ── Estratégia 2: por item (fallback se bulk não funcionar) ──────────
       if (!usedBulk || Object.keys(promoByItem).length === 0) {
         promoByItem = {};
-        const total = mlItems.length;
-        for (let i = 0; i < total; i += 5) {
-          const batch = mlItems.slice(i, i + 5);
-          setLoadingStep(`Buscando promoções ${i + 1}–${Math.min(i + 5, total)} de ${total}...`);
+        const total      = mlItems.length;
+        const BATCH_SIZE = 10;  // 10 itens por lote
+        const batches: typeof mlItems[] = [];
+        for (let i = 0; i < total; i += BATCH_SIZE) {
+          batches.push(mlItems.slice(i, i + BATCH_SIZE));
+        }
+
+        setLoadingStep(`Buscando promoções de ${total} produtos em ${batches.length} lotes paralelos...`);
+
+        // Todos os lotes em paralelo — sem esperar um terminar para começar o próximo
+        await Promise.all(batches.map(async (batch, batchIdx) => {
+          // Pequeno jitter para não bater todos exatamente ao mesmo tempo
+          await new Promise(r => setTimeout(r, batchIdx * 50));
+
           await Promise.all(batch.map(async p => {
             try {
-              const raw = await ml(`/seller-promotions/items/${p.mlItemId}?app_version=v2`);
+              const raw   = await ml(`/seller-promotions/items/${p.mlItemId}?app_version=v2`);
               const items = extractPromos(raw);
-              const id = p.mlItemId!;
-              if (!promoByItem[id]) promoByItem[id] = [];
+              const id    = p.mlItemId!;
 
+              const promos: Promo[] = [];
               for (const item of items) {
-                const o = item as Record<string, unknown>;
+                const o         = item as Record<string, unknown>;
                 const type      = String(o.promotion_type || "");
                 const statusStr = getStatusStr(o.status);
                 if (IGNORE_TYPES.includes(type)) continue;
@@ -236,7 +246,6 @@ export function PromocoesTab() {
                 const isActive = ["started","active"].includes(statusStr);
                 if (!isInvite && !isActive && statusStr !== "paused") continue;
 
-                // Filtra convites automáticos
                 const deadline = o.deadline_date as string | undefined;
                 const finish   = (o.finish_date || o.end_date) as string | undefined;
                 if (isInvite) {
@@ -245,7 +254,7 @@ export function PromocoesTab() {
                   if ((type === "PRICE_DISCOUNT" || type === "LIGHTNING") && !deadline) continue;
                 }
 
-                promoByItem[id].push({
+                promos.push({
                   promotionId:    String(o.id || ""),
                   promotionType:  type,
                   name:           String(o.name || TYPE_LABEL[type] || type),
@@ -263,6 +272,16 @@ export function PromocoesTab() {
                   currentPrice:   p.listings.find(l => l.channel === "ml")?.currentPrice,
                 });
               }
+
+              // Acesso thread-safe ao objeto compartilhado
+              if (promos.length > 0) {
+                promoByItem[id] = (promoByItem[id] || []).concat(promos);
+              }
+
+              // Atualiza contador em tempo real
+              const done = Object.keys(promoByItem).length;
+              setLoadingStep(`${done} / ${total} produtos processados...`);
+
             } catch (e) {
               const msg = (e as Error).message;
               if (!msg.includes("404") && !msg.includes("not_found")) {
@@ -270,8 +289,7 @@ export function PromocoesTab() {
               }
             }
           }));
-          await new Promise(r => setTimeout(r, 150));
-        }
+        }));
       }
 
       // ── Monta grupos por produto ──────────────────────────────────────────
