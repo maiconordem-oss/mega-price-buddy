@@ -7,6 +7,7 @@ import { ml, proxyPost, serverSave, serverLoad, BRL } from "@/services/ml-api";
 import { useProducts } from "@/contexts/ProductsContext";
 import { useAuth } from "@/contexts/AuthContext";
 import { useShopReset } from "@/hooks/useShopReset";
+import { usePromocoes, type ActivePromo } from "@/contexts/PromocoesContext";
 import { toast } from "sonner";
 import {
   Loader2, RefreshCw, Search, Tag, Check, X,
@@ -115,6 +116,7 @@ function extractPromos(raw: unknown): unknown[] {
 export function PromocoesTab() {
   const { products } = useProducts();
   const { userId, mlConnected } = useAuth();
+  const { setActivePromos } = usePromocoes();
 
   const [groups,      setGroups]      = useState<ProductGroup[]>([]);
   const [loaded,      setLoaded]      = useState(false);
@@ -422,6 +424,27 @@ export function PromocoesTab() {
       setLoaded(true);
       serverSave(CACHE_KEY, result).catch(() => {});
 
+      // Publica promoções ATIVAS no contexto para a PrecificacaoTab
+      const actives: ActivePromo[] = [];
+      for (const g of result) {
+        for (const p of g.promos) {
+          if (!p.isInvite && p.finalPrice && p.finalPrice > 0) {
+            actives.push({
+              mlItemId:      g.mlItemId,
+              promotionType: p.promotionType,
+              name:          p.name,
+              finalPrice:    p.finalPrice,
+              discountPct:   p.discountPct || 0,
+              sellerPct:     p.sellerPct,
+              meliPct:       p.meliPct,
+              startDate:     p.startDate,
+              endDate:       p.endDate,
+            });
+          }
+        }
+      }
+      setActivePromos(actives);
+
       const totalInvites = result.reduce((s, g) => s + g.promos.filter(p => p.isInvite).length, 0);
       const totalActive  = result.reduce((s, g) => s + g.promos.filter(p => !p.isInvite).length, 0);
       toast.success(`${totalInvites} convite(s) · ${totalActive} promoção(ões) ativa(s)`);
@@ -513,13 +536,32 @@ export function PromocoesTab() {
       }
 
       toast.success(`Participando! Preço: ${BRL(dealPrice)}`);
-      setGroups(prev => prev.map(gr => gr.mlItemId !== g.mlItemId ? gr : {
-        ...gr,
-        promos: gr.promos.map(p =>
-          p.promotionId !== promo.promotionId ? p
-            : { ...p, isInvite: false, status: "active", finalPrice: dealPrice }
-        ),
-      }));
+      setGroups(prev => {
+        const updated = prev.map(gr => gr.mlItemId !== g.mlItemId ? gr : {
+          ...gr,
+          promos: gr.promos.map(p =>
+            p.promotionId !== promo.promotionId ? p
+              : { ...p, isInvite: false, status: "active", finalPrice: dealPrice }
+          ),
+        });
+        // Atualiza contexto com nova promoção ativa
+        const actives: ActivePromo[] = [];
+        for (const gr of updated) {
+          for (const p of gr.promos) {
+            if (!p.isInvite && p.finalPrice && p.finalPrice > 0) {
+              actives.push({
+                mlItemId: gr.mlItemId, promotionType: p.promotionType,
+                name: p.name, finalPrice: p.finalPrice,
+                discountPct: p.discountPct || 0,
+                sellerPct: p.sellerPct, meliPct: p.meliPct,
+                startDate: p.startDate, endDate: p.endDate,
+              });
+            }
+          }
+        }
+        setActivePromos(actives);
+        return updated;
+      });
     } catch (e) {
       const msg = (e as Error).message;
       if (msg.includes("FINAL_PRICE_LOWER_THAN_ZERO")) {

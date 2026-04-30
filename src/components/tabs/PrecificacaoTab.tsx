@@ -5,10 +5,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { ChevronDown, ChevronRight, Package, TrendingUp, CheckCircle2, AlertTriangle, Loader2, Download, Search, Clock } from "lucide-react";
+import { ChevronDown, ChevronRight, Package, TrendingUp, CheckCircle2, AlertTriangle, Loader2, Download, Search, Clock, Tag } from "lucide-react";
 import { useAutoRefresh } from "@/hooks/useAutoRefresh";
 import { useProducts } from "@/contexts/ProductsContext";
 import { useAuth } from "@/contexts/AuthContext";
+import { usePromocoes } from "@/contexts/PromocoesContext";
 import { computePricingRow, BRL, getTierDeductions } from "@/lib/pricing";
 import { proxyPost } from "@/services/ml-api";
 import { toast } from "sonner";
@@ -37,6 +38,7 @@ function savePriceIncrease(shopId: string, itemId: string, pct: number) {
 export function PrecificacaoTab() {
   const { params, setParams, products, updateProduct, loadMLProducts, loadingProducts, saveProductCosts } = useProducts();
   const { userId, currentShop } = useAuth();
+  const { activePromos } = usePromocoes();
   const shopId = currentShop?.id ?? "default";
   const [paramsOpen, setParamsOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -424,6 +426,28 @@ export function PrecificacaoTab() {
 
                     {/* Preço venda */}
                     <td className="px-2 py-1.5">
+                      {/* Promoção ativa do ML (vem da aba Promoções) */}
+                      {(() => {
+                        const activePromo = p.mlItemId ? activePromos[p.mlItemId] : null;
+                        if (activePromo) {
+                          return (
+                            <div className="mb-1 p-1.5 rounded bg-green-50 border border-green-200">
+                              <div className="flex items-center gap-1 mb-0.5">
+                                <Tag className="h-2.5 w-2.5 text-green-600 shrink-0" />
+                                <span className="text-[9px] text-green-700 font-bold truncate max-w-[80px]" title={activePromo.name}>
+                                  {activePromo.name}
+                                </span>
+                              </div>
+                              <div className="text-green-700 font-bold font-mono text-[11px]">{BRL(activePromo.finalPrice)}</div>
+                              <div className="text-[9px] text-green-600">
+                                -{(activePromo.discountPct * 100).toFixed(0)}% · ATIVA
+                              </div>
+                            </div>
+                          );
+                        }
+                        return null;
+                      })()}
+
                       {(p.promoPrice ?? 0) > 0 ? (
                         <div>
                           <div className="line-through text-gray-400 text-[10px] font-mono">{BRL(mlPrice)}</div>
