@@ -469,9 +469,24 @@ export function PromocoesTab() {
     try {
       if (!promo.promotionId) throw new Error("ID da promoção não encontrado. Recarregue a lista.");
 
-      const type       = promo.promotionType;
-      const price      = promo.currentPrice || g.currentPrice;
-      const dealPrice  = Math.round(price * (1 - discountPct / 100) * 100) / 100;
+      const type      = promo.promotionType;
+      const price     = promo.currentPrice || g.currentPrice;
+
+      // discountPct vem como % (ex: 5 = 5%) — calcula o preço final
+      const dealPrice = Math.round(price * (1 - discountPct / 100) * 100) / 100;
+
+      // Validações antes de enviar
+      if (!dealPrice || dealPrice <= 0) {
+        throw new Error(`Preço calculado inválido (${dealPrice}). Verifique o desconto.`);
+      }
+      if (promo.minPrice && dealPrice < promo.minPrice) {
+        throw new Error(`Preço ${BRL(dealPrice)} abaixo do mínimo permitido (${BRL(promo.minPrice)}).`);
+      }
+      if (promo.maxPrice && dealPrice > promo.maxPrice) {
+        throw new Error(`Preço ${BRL(dealPrice)} acima do máximo permitido (${BRL(promo.maxPrice)}).`);
+      }
+
+      console.log(`[PROMO ACCEPT] type=${type} id=${promo.promotionId} price=${dealPrice} disc=${discountPct}%`);
 
       if (type === "PRICE_DISCOUNT") {
         await proxyPost("PUT",
@@ -483,23 +498,33 @@ export function PromocoesTab() {
           `/seller-promotions/items/${g.mlItemId}?app_version=v2`,
           { promotion_type: type, promotion_id: promo.promotionId, deal_price: dealPrice }
         );
+      } else if (type === "SELLER_CAMPAIGN") {
+        // SELLER_CAMPAIGN com FLEXIBLE_PERCENTAGE precisa do deal_price
+        await proxyPost("POST",
+          `/seller-promotions/items/${g.mlItemId}?app_version=v2`,
+          { promotion_type: type, promotion_id: promo.promotionId, deal_price: dealPrice }
+        );
       } else {
+        // MARKETPLACE_CAMPAIGN, SELLER_COUPON_CAMPAIGN, VOLUME, etc.
         await proxyPost("POST",
           `/seller-promotions/items/${g.mlItemId}?app_version=v2`,
           { promotion_type: type, promotion_id: promo.promotionId }
         );
       }
 
-      toast.success("Participando da promoção!");
+      toast.success(`Participando! Preço: ${BRL(dealPrice)}`);
       setGroups(prev => prev.map(gr => gr.mlItemId !== g.mlItemId ? gr : {
         ...gr,
         promos: gr.promos.map(p =>
-          p.promotionId !== promo.promotionId ? p : { ...p, isInvite: false, status: "active" }
+          p.promotionId !== promo.promotionId ? p
+            : { ...p, isInvite: false, status: "active", finalPrice: dealPrice }
         ),
       }));
     } catch (e) {
       const msg = (e as Error).message;
-      if (msg.includes("invalid_promotion") || msg.includes("invalid promotion")) {
+      if (msg.includes("FINAL_PRICE_LOWER_THAN_ZERO")) {
+        toast.error("Preço final não pode ser zero. Verifique o desconto no modal.");
+      } else if (msg.includes("invalid_promotion") || msg.includes("invalid promotion")) {
         toast.error("Promoção inválida ou expirada. Recarregue a lista.");
       } else {
         toast.error("Erro ao participar: " + msg);
