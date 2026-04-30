@@ -297,16 +297,50 @@ export function PromocoesTab() {
       const result: ProductGroup[] = mlItems
         .filter(p => (promoByItem[p.mlItemId!] || []).length > 0)
         .map(p => {
-          const listing = p.listings.find(l => l.channel === "ml");
-          const price   = listing?.currentPrice || 0;
-          const promos  = (promoByItem[p.mlItemId!] || []).map(promo => {
-            // Calcula preço final e o que você recebe
-            const discount  = promo.discountPct || 0;
-            const finalP    = promo.suggestedPrice || (discount > 0 ? price * (1 - discount / 100) : undefined);
-            const commission = listing?.fee || 12;
-            const youGet    = finalP ? finalP * (1 - commission / 100) : undefined;
-            const meliDisc  = promo.meliPct && finalP ? finalP * promo.meliPct : undefined;
-            return { ...promo, currentPrice: price, finalPrice: finalP, youReceive: youGet, meliDiscount: meliDisc };
+          const listing    = p.listings.find(l => l.channel === "ml");
+          const price      = listing?.currentPrice || 0;
+          const commission = (listing?.fee || 12) / 100;
+
+          const promos = (promoByItem[p.mlItemId!] || []).map(promo => {
+            // sellerPct e meliPct vêm como decimal (0.10 = 10%)
+            // discountPct pode vir como decimal ou inteiro dependendo do endpoint
+            const sellerDec = promo.sellerPct || 0   // ex: 0.10
+            const meliDec   = promo.meliPct   || 0   // ex: 0.05
+            const totalDec  = sellerDec + meliDec     // ex: 0.15 = 15%
+
+            // discountPct: normaliza para decimal
+            let discDec = promo.discountPct || 0
+            if (discDec > 1) discDec = discDec / 100  // veio como inteiro (ex: 10 → 0.10)
+
+            // Usa o maior desconto disponível para calcular preço final
+            const bestDec = discDec || totalDec
+
+            // Preço final: preferência para suggestedPrice da API, depois calcula
+            const finalP = promo.suggestedPrice
+              || promo.minPrice  // min = maior desconto possível
+              || (bestDec > 0 ? Math.round(price * (1 - bestDec) * 100) / 100 : undefined)
+
+            // O que você recebe = preço final menos comissão ML
+            const youGet = finalP ? Math.round(finalP * (1 - commission) * 100) / 100 : undefined
+
+            // Quanto o ML reduz das tarifas (subsidio)
+            const meliDisc = meliDec > 0 && finalP
+              ? Math.round(finalP * commission * meliDec * 100) / 100
+              : undefined
+
+            // discountPct final em decimal para exibição
+            const displayDiscDec = bestDec || (finalP && price > 0 ? 1 - finalP / price : 0)
+
+            return {
+              ...promo,
+              currentPrice:  price,
+              finalPrice:    finalP,
+              youReceive:    youGet,
+              meliDiscount:  meliDisc,
+              discountPct:   displayDiscDec,  // sempre decimal agora
+              sellerPct:     sellerDec,
+              meliPct:       meliDec,
+            }
           });
           return {
             mlItemId:     p.mlItemId!,
@@ -525,16 +559,14 @@ export function PromocoesTab() {
                   </thead>
                   <tbody>
                     {g.promos.map(promo => {
-                      const actKey  = `${g.mlItemId}-${promo.promotionId}`;
-                      const acting  = actingKey === actKey;
-                      const ss      = STATUS_STYLE[promo.status] || STATUS_STYLE.finished;
-                      const discPct = promo.discountPct
-                        ? promo.discountPct
-                        : promo.sellerPct && promo.meliPct
-                        ? (promo.sellerPct + promo.meliPct) * 100
-                        : promo.sellerPct
-                        ? promo.sellerPct * 100
-                        : undefined;
+                      const actKey = `${g.mlItemId}-${promo.promotionId}`;
+                      const acting = actingKey === actKey;
+                      const ss     = STATUS_STYLE[promo.status] || STATUS_STYLE.finished;
+
+                      // discountPct já normalizado para decimal no montagem
+                      const discPctDisplay = promo.discountPct && promo.discountPct > 0
+                        ? (promo.discountPct * 100).toFixed(0) + "%"
+                        : null;
 
                       return (
                         <tr key={actKey} className="border-t hover:bg-muted/20">
@@ -572,20 +604,24 @@ export function PromocoesTab() {
 
                           {/* Desconto */}
                           <td className="px-3 py-3 text-right">
-                            {discPct != null ? (
+                            {discPctDisplay ? (
                               <div>
                                 <div className="font-semibold">
-                                  {promo.finalPrice
-                                    ? BRL(g.currentPrice - promo.finalPrice)
-                                    : `${discPct.toFixed(0)}%`}
+                                  {promo.finalPrice && promo.currentPrice
+                                    ? BRL(promo.currentPrice - promo.finalPrice)
+                                    : discPctDisplay}
                                 </div>
                                 <div className="text-xs text-muted-foreground">
-                                  {discPct.toFixed(0)}%
+                                  {discPctDisplay}
+                                  {promo.sellerPct && promo.meliPct
+                                    ? ` (você ${(promo.sellerPct * 100).toFixed(0)}% + ML ${(promo.meliPct * 100).toFixed(0)}%)`
+                                    : ""}
                                 </div>
                               </div>
                             ) : promo.minPrice ? (
-                              <div className="text-xs text-muted-foreground">
-                                Mín {BRL(promo.minPrice)}
+                              <div>
+                                <div className="text-xs text-muted-foreground">Mín {BRL(promo.minPrice)}</div>
+                                {promo.maxPrice && <div className="text-xs text-muted-foreground">Máx {BRL(promo.maxPrice)}</div>}
                               </div>
                             ) : <span className="text-muted-foreground">—</span>}
                           </td>
