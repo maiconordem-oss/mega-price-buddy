@@ -38,6 +38,7 @@ interface AbcItem {
   // estrela
   isEstrela: boolean
   estrelScore: number       // 0-100
+  noData?: boolean
 }
 
 // ── Constantes ────────────────────────────────────────────────────────────────
@@ -137,6 +138,8 @@ export function CurvaAbcTab() {
       name:      p.name,
       mlItemId:  p.mlItemId!,
       image:     p.image,
+      available_quantity: (p as any).available_quantity as number ?? -1,
+      status:    (p as any).status as string ?? 'active',
       revenue:   orderMap[p.mlItemId!]?.revenue || 0,
       qty:       orderMap[p.mlItemId!]?.qty || 0,
       visits:    visitMap[p.mlItemId!] || 0,
@@ -147,28 +150,31 @@ export function CurvaAbcTab() {
       })(),
     }))
 
-    const totalRevenue = base.reduce((s, x) => s + x.revenue, 0)
+    // Separa: participam do cálculo ABC só os que tiveram alguma atividade
+    // Produtos sem nenhuma venda, visita E pausados ficam como "Sem dados"
+    const comDados    = base.filter(p => p.revenue > 0 || p.qty > 0 || p.visits > 0)
+    const semDados    = base.filter(p => p.revenue === 0 && p.qty === 0 && p.visits === 0)
+
+    const totalRevenue  = comDados.reduce((s, x) => s + x.revenue, 0)
     const avgConversion = (() => {
-      const withVisits = base.filter(x => x.visits > 0)
+      const withVisits = comDados.filter(x => x.visits > 0)
       return withVisits.length > 0
         ? withVisits.reduce((s, x) => s + x.conversion, 0) / withVisits.length
         : 0
     })()
 
-    // ABC por faturamento (ordenado por revenue desc)
-    const byRevenue = [...base].sort((a, b) => b.revenue - a.revenue)
+    // ABC calculado APENAS nos produtos com dados
+    const byRevenue = [...comDados].sort((a, b) => b.revenue - a.revenue)
     const mapRevenue = classificarABC(byRevenue.map(x => ({ id: x.mlItemId, valor: x.revenue })))
 
-    // ABC por quantidade (ordenado por qty desc)
-    const byQty = [...base].sort((a, b) => b.qty - a.qty)
+    const byQty = [...comDados].sort((a, b) => b.qty - a.qty)
     const mapQty = classificarABC(byQty.map(x => ({ id: x.mlItemId, valor: x.qty })))
 
-    // ABC por visitas (ordenado por visits desc)
-    const byVisits = [...base].sort((a, b) => b.visits - a.visits)
+    const byVisits = [...comDados].sort((a, b) => b.visits - a.visits)
     const mapVisits = classificarABC(byVisits.map(x => ({ id: x.mlItemId, valor: x.visits })))
 
-    // Montar objetos completos
-    const withAbc = base.map(p => {
+    // Produtos COM dados — têm classificação ABC real
+    const withAbc = comDados.map(p => {
       const rr = mapRevenue.get(p.mlItemId) || { abc: "C" as AbcClass, pctAcc: 1 }
       const rq = mapQty.get(p.mlItemId)     || { abc: "C" as AbcClass, pctAcc: 1 }
       const rv = mapVisits.get(p.mlItemId)  || { abc: "C" as AbcClass, pctAcc: 1 }
@@ -183,8 +189,23 @@ export function CurvaAbcTab() {
       }
     })
 
-    // Calcular estrela
-    return withAbc.map(p => {
+    // Produtos SEM dados — classificados como "C" mas marcados como sem atividade
+    const withoutAbc = semDados.map(p => ({
+      ...p,
+      abcRevenue:    "C" as AbcClass,
+      abcQty:        "C" as AbcClass,
+      abcVisits:     "C" as AbcClass,
+      pctAccRevenue: 1,
+      pctAccQty:     1,
+      pctAccVisits:  1,
+      noData: true,  // flag para UI diferenciar
+    }))
+
+    // Combina: com dados primeiro (ordenados pelo ABC), sem dados por último
+    const all = [...withAbc, ...withoutAbc]
+
+    // Calcular estrela (só produtos com dados)
+    return all.map(p => {
       const { isEstrela, estrelScore } = calcularEstrela(p, avgConversion, totalRevenue)
       return { ...p, isEstrela, estrelScore }
     })
@@ -218,10 +239,11 @@ export function CurvaAbcTab() {
 
   // Contagens por curva (dimensão ativa)
   const counts = useMemo(() => ({
-    A: allItems.filter(x => getAbc(x) === "A").length,
-    B: allItems.filter(x => getAbc(x) === "B").length,
-    C: allItems.filter(x => getAbc(x) === "C").length,
+    A: allItems.filter(x => !x.noData && getAbc(x) === "A").length,
+    B: allItems.filter(x => !x.noData && getAbc(x) === "B").length,
+    C: allItems.filter(x => !x.noData && getAbc(x) === "C").length,
     estrela: allItems.filter(x => x.isEstrela).length,
+    semDados: allItems.filter(x => x.noData).length,
   }), [allItems, mode])
 
   // Gráfico: top 20 ordenados pela dimensão ativa
@@ -246,16 +268,15 @@ export function CurvaAbcTab() {
     <div className="space-y-5">
 
       {/* ── Cards de resumo ──────────────────────────────────────────────── */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
         {(["A", "B", "C"] as AbcClass[]).map(l => (
-          <Card key={l} className={`cursor-pointer transition-all ${showOnly === "all" ? "" : "opacity-70"}`}
-            onClick={() => setShowOnly("all")}>
+          <Card key={l} className="cursor-pointer" onClick={() => setShowOnly("all")}>
             <CardContent className="p-4 flex items-center gap-3">
               <div className="h-10 w-10 rounded-xl flex items-center justify-center font-black text-base text-white shrink-0"
                 style={{ background: ABC_COLORS[l] }}>{l}</div>
               <div>
                 <div className="text-xs text-muted-foreground">
-                  {l === "A" ? `0–80% ${modeLabel}` : l === "B" ? `80–95% ${modeLabel}` : `95–100%`}
+                  {l === "A" ? `0–80% ${modeLabel}` : l === "B" ? `80–95%` : `95–100%`}
                 </div>
                 <div className="text-xl font-bold">{counts[l]}</div>
               </div>
@@ -263,22 +284,32 @@ export function CurvaAbcTab() {
           </Card>
         ))}
 
-        {/* Card Estrela */}
-        <Card
-          className={`cursor-pointer transition-all border-2 ${showOnly === "estrela" ? "border-[#2D3277]" : "border-transparent"}`}
-          onClick={() => setShowOnly(v => v === "estrela" ? "all" : "estrela")}
-        >
+        {/* Estrela */}
+        <Card className={`cursor-pointer transition-all border-2 ${showOnly === "estrela" ? "border-[#2D3277]" : "border-transparent"}`}
+          onClick={() => setShowOnly(v => v === "estrela" ? "all" : "estrela")}>
           <CardContent className="p-4 flex items-center gap-3">
-            <div className="h-10 w-10 rounded-xl flex items-center justify-center shrink-0"
-              style={{ background: "#FFE600" }}>
+            <div className="h-10 w-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: "#FFE600" }}>
               <Star className="h-5 w-5 fill-[#2D3277] text-[#2D3277]" />
             </div>
             <div>
-              <div className="text-xs text-muted-foreground">Produto Estrela</div>
+              <div className="text-xs text-muted-foreground">Estrela</div>
               <div className="text-xl font-bold text-[#2D3277]">{counts.estrela}</div>
             </div>
           </CardContent>
         </Card>
+
+        {/* Sem dados */}
+        {counts.semDados > 0 && (
+          <Card className="opacity-60">
+            <CardContent className="p-4 flex items-center gap-3">
+              <div className="h-10 w-10 rounded-xl bg-muted flex items-center justify-center shrink-0 text-xs font-bold text-muted-foreground">—</div>
+              <div>
+                <div className="text-xs text-muted-foreground">Sem atividade</div>
+                <div className="text-xl font-bold text-muted-foreground">{counts.semDados}</div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
       </div>
 
       {/* Legenda estrela */}
@@ -443,12 +474,16 @@ export function CurvaAbcTab() {
                     >
                       {/* Curva ativa */}
                       <td className="px-3 py-2">
-                        <Badge
-                          className="font-bold border-0 text-white text-xs"
-                          style={{ background: ABC_COLORS[abc] }}
-                        >
-                          {abc}
-                        </Badge>
+                        {item.noData ? (
+                          <span className="text-xs text-muted-foreground italic">sem dados</span>
+                        ) : (
+                          <Badge
+                            className="font-bold border-0 text-white text-xs"
+                            style={{ background: ABC_COLORS[abc] }}
+                          >
+                            {abc}
+                          </Badge>
+                        )}
                       </td>
 
                       {/* Nome + SKU + MLB + link */}
