@@ -463,6 +463,11 @@ export function CurvaAbcTab() {
                             {/* Título */}
                             <div className="font-medium text-xs leading-snug line-clamp-2" title={item.name}>
                               {item.name}
+                              {(item as any).available_quantity === 0 && (
+                                <span className="ml-1.5 inline-flex items-center px-1 py-0 rounded text-[9px] font-bold bg-orange-100 text-orange-700">
+                                  sem estoque
+                                </span>
+                              )}
                             </div>
                             {/* SKU + MLB + link */}
                             <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-1">

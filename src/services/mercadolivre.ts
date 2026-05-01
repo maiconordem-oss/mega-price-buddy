@@ -16,15 +16,24 @@ interface MLItemDetail {
 
 async function fetchAllItemIds(userId: string): Promise<string[]> {
   const ids: string[] = [];
-  let offset = 0;
-  const limit = 50;
-  while (true) {
-    const data = await ml(`/users/${userId}/items/search?status=active&limit=${limit}&offset=${offset}`) as { results: string[]; paging: { total: number } };
-    ids.push(...data.results);
-    if (ids.length >= data.paging.total || data.results.length < limit) break;
-    offset += limit;
+
+  // Busca active E paused — produtos sem estoque ficam como paused mas
+  // ainda têm histórico de vendas e devem aparecer na Curva ABC
+  for (const status of ["active", "paused"]) {
+    let offset = 0;
+    const limit = 50;
+    while (true) {
+      const data = await ml(
+        `/users/${userId}/items/search?status=${status}&limit=${limit}&offset=${offset}`
+      ) as { results: string[]; paging: { total: number } };
+      ids.push(...data.results);
+      if (ids.length >= data.paging.total || data.results.length < limit) break;
+      offset += limit;
+    }
   }
-  return ids;
+
+  // Remove duplicatas (improvável mas seguro)
+  return [...new Set(ids)];
 }
 
 async function fetchItemDetails(ids: string[]): Promise<MLItemDetail[]> {
@@ -43,13 +52,16 @@ function toProduct(item: MLItemDetail): Product {
     name: item.title,
     image: (item.thumbnail || "").replace("http:", "https:"),
     cost: 0,
-    shipping: item.shipping?.free_shipping ? 0 : 0, // frete inserido manualmente
+    shipping: 0,
     fullCost: 0,
     stCost: 0,
     mlItemId: item.id,
     listing_type_id: item.listing_type_id,
+    // Salva status e estoque para uso na UI (sem estoque = paused)
+    available_quantity: item.available_quantity,
+    status: item.status,
     listings: [{ channel: "ml" as const, currentPrice: item.price, fee: item.listing_type_id === "gold_pro" ? 17 : 12 }],
-  };
+  } as Product;
 }
 
 export async function getProducts(userId: string): Promise<Product[]> {
