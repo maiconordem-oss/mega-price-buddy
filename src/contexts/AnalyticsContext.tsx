@@ -243,10 +243,20 @@ export function AnalyticsProvider({ children }: { children: ReactNode }) {
       const dateTo   = toMLDate(now)
       const itemIds  = mlItems.map(p => p.mlItemId!)
 
-      // ── Visitas (1 por request, lotes de 8) ──────────────────────────────
+      // ── Visitas: todos os lotes em paralelo (igual promoções) ────────────
+      // 1 request por item (API ML não aceita múltiplos IDs)
+      // Lotes de 10, todos disparados ao mesmo tempo com jitter de 50ms
       toast.loading(`Buscando visitas (${itemIds.length} produtos)...`, { id: 'analytics' })
       const newVisitMap: VisitData = {}
-      for (const batch of chunks(itemIds, 8)) {
+
+      const visitBatches: string[][] = []
+      for (let i = 0; i < itemIds.length; i += 10) {
+        visitBatches.push(itemIds.slice(i, i + 10))
+      }
+
+      await Promise.all(visitBatches.map(async (batch, batchIdx) => {
+        // Jitter: distribui os lotes para não bater todos no mesmo ms
+        await new Promise(r => setTimeout(r, batchIdx * 50))
         await Promise.all(batch.map(async id => {
           try {
             const res = await ml(
@@ -262,8 +272,7 @@ export function AnalyticsProvider({ children }: { children: ReactNode }) {
             }
           } catch { newVisitMap[id] = 0 }
         }))
-        await new Promise(r => setTimeout(r, 200))
-      }
+      }))
 
       // ── Pedidos (90 dias) ─────────────────────────────────────────────────
       toast.loading('Buscando pedidos (90 dias)...', { id: 'analytics' })

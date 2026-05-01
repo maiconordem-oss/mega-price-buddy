@@ -205,45 +205,61 @@ export function BRL(v: number) {
   return v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
 }
 
-/** Busca TODOS os pedidos paginando automaticamente (limit=50 por vez, maxPages páginas) */
+/** Busca TODOS os pedidos — primeira página para saber o total, resto em paralelo */
 export async function fetchAllOrders(
   userId: string,
   status: string,
   dateFrom: string,
-  maxPages = 20,
+  maxPages = 40,
 ): Promise<Array<Record<string, unknown>>> {
-  const all: Array<Record<string, unknown>> = []
-  let offset = 0
   const limit = 50
 
-  for (let page = 0; page < maxPages; page++) {
-    // Parâmetro correto da API ML: order.date_created.from (não date_created_from)
-    const qs = [
-      `seller=${encodeURIComponent(userId)}`,
-      `order.status=${encodeURIComponent(status)}`,
-      `sort=date_desc`,
-      `limit=${limit}`,
-      `offset=${offset}`,
-      `order.date_created.from=${encodeURIComponent(dateFrom)}`,
-    ].join('&')
+  const buildQs = (offset: number) => [
+    `seller=${encodeURIComponent(userId)}`,
+    `order.status=${encodeURIComponent(status)}`,
+    `sort=date_desc`,
+    `limit=${limit}`,
+    `offset=${offset}`,
+    `order.date_created.from=${encodeURIComponent(dateFrom)}`,
+  ].join('&')
 
-    const res = await ml(`/orders/search?${qs}`) as {
-      results?: Array<Record<string, unknown>>
-      orders?:  Array<Record<string, unknown>>
-      paging?:  { total: number; limit: number; offset: number }
-    }
-
-    // API pode retornar "results" ou "orders" dependendo da versão
-    const results = res.results ?? res.orders ?? []
-    all.push(...results)
-
-    const total = res.paging?.total ?? 0
-    if (results.length < limit || all.length >= total) break
-    offset += limit
-
-    // delay entre páginas para não bater rate limit
-    if (page < maxPages - 1) await new Promise(r => setTimeout(r, 350))
+  // ── Página 0: descobrir o total ────────────────────────────────────────────
+  const first = await ml(`/orders/search?${buildQs(0)}`) as {
+    results?: Array<Record<string, unknown>>
+    orders?:  Array<Record<string, unknown>>
+    paging?:  { total: number }
   }
 
-  return all
+  const firstResults = first.results ?? first.orders ?? []
+  const total        = first.paging?.total ?? firstResults.length
+
+  if (firstResults.length >= total) return firstResults
+
+  // ── Páginas restantes em paralelo ──────────────────────────────────────────
+  const offsets: number[] = []
+  for (let offset = limit; offset < Math.min(total, maxPages * limit); offset += limit) {
+    offsets.push(offset)
+  }
+
+  const batchSize = 5 // 5 páginas em paralelo (250 pedidos por wave)
+  const rest: Array<Record<string, unknown>> = []
+
+  for (let i = 0; i < offsets.length; i += batchSize) {
+    const wave = offsets.slice(i, i + batchSize)
+    const results = await Promise.all(wave.map(async offset => {
+      const res = await ml(`/orders/search?${buildQs(offset)}`) as {
+        results?: Array<Record<string, unknown>>
+        orders?:  Array<Record<string, unknown>>
+      }
+      return res.results ?? res.orders ?? []
+    }))
+    results.forEach(r => rest.push(...r))
+
+    // Pequeno delay entre waves para não bater rate limit
+    if (i + batchSize < offsets.length) {
+      await new Promise(r => setTimeout(r, 200))
+    }
+  }
+
+  return [...firstResults, ...rest]
 }
