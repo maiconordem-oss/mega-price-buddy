@@ -216,7 +216,10 @@ export function PromocoesTab() {
 
             for (const id of itemIds) {
               if (!promoByItem[id]) promoByItem[id] = [];
-              promoByItem[id].push(promo);
+              const existingIds = new Set(promoByItem[id].map(e => e.promotionId));
+              if (!existingIds.has(promo.promotionId)) {
+                promoByItem[id].push(promo);
+              }
             }
           }
         }
@@ -344,7 +347,10 @@ export function PromocoesTab() {
               }
 
               if (promos.length > 0) {
-                promoByItem[id] = (promoByItem[id] || []).concat(promos);
+                const existing = promoByItem[id] || [];
+                const existingIds = new Set(existing.map(e => e.promotionId));
+                const newPromos = promos.filter(p => p.promotionId && !existingIds.has(p.promotionId));
+                promoByItem[id] = existing.concat(newPromos);
               }
 
               const done = Object.keys(promoByItem).length;
@@ -369,7 +375,12 @@ export function PromocoesTab() {
           const price      = listing?.currentPrice || 0;
           const commission = (listing?.fee || 12) / 100;
 
-          const promos = (promoByItem[p.mlItemId!] || []).map(promo => {
+          const promos = (promoByItem[p.mlItemId!] || [])
+            // Deduplicar por promotionId (proteção extra contra duplicatas)
+            .filter((promo, idx, arr) =>
+              !promo.promotionId || arr.findIndex(x => x.promotionId === promo.promotionId) === idx
+            )
+            .map(promo => {
             // Parser já normalizou tudo para decimal e original_price
             // Aqui só calculamos finalPrice e youReceive para exibição
 
