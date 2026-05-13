@@ -148,10 +148,29 @@ export async function getAuthUrl(codeChallenge: string): Promise<string> {
 import { kvSave, kvLoad } from '@/server/kv'
 
 let _userId = ''
+let _loginUser = ''
 export function setUserId(id: string) { _userId = id }
 export function getUserId() { return _userId }
+export function setLoginUser(u: string) { _loginUser = u }
+export function getLoginUser() { return _loginUser }
 
 function storageKey(key: string) { return `megalabs:${_userId || 'anon'}:${_shopId || 'default'}:${key}` }
+
+// ── Sessão completa do usuário (shops + tokens) — chaveada por username ───
+// Permite manter ML logado entre dispositivos: ao logar, recupera tokens do KV.
+export async function sessionSave(username: string, session: unknown): Promise<void> {
+  if (!username) return
+  try { await kvSave({ data: { userId: username, shopId: '_session', key: 'auth', value: session } }) } catch {}
+}
+export async function sessionLoad<T>(username: string): Promise<T | null> {
+  if (!username) return null
+  try {
+    const raw = await kvLoad({ data: { userId: username, shopId: '_session', key: 'auth' } })
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as { data: T }
+    return parsed.data
+  } catch { return null }
+}
 
 export async function serverSave(key: string, data: unknown, ttlSeconds?: number): Promise<void> {
   // Sempre grava localStorage (cache rápido / offline)
