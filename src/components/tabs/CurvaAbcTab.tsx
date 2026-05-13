@@ -137,7 +137,12 @@ export function CurvaAbcTab() {
 
   // ── Classificação completa ────────────────────────────────────────────────
   const allItems = useMemo((): AbcItem[] => {
-    const mlItems = products.filter(p => p.mlItemId)
+    // Fix duplicatas: mesmo mlItemId pode aparecer mais de uma vez no array
+    // de produtos (cache + refresh em paralelo, ou dois anúncios com mesmo SKU)
+    const seen = new Set<string>()
+    const mlItems = products
+      .filter(p => p.mlItemId)
+      .filter(p => { if (seen.has(p.mlItemId!)) return false; seen.add(p.mlItemId!); return true })
 
     // Visitas são sempre de 90 dias (limitação da API ML).
     // Quando days < 90, escalamos proporcionalmente como estimativa.
@@ -234,20 +239,31 @@ export function CurvaAbcTab() {
     })
   }, [products, orderMap, visitMap])
 
-  // ── Tabela ordenada pela dimensão ativa ───────────────────────────────────
+  // Ordem numérica das classes ABC para ordenação
+  const ABC_ORDER: Record<AbcClass, number> = { A: 0, B: 1, C: 2 }
+
+  // ── Tabela ordenada: A → B → C sempre, depois métrica dentro do grupo ────
   const tableItems = useMemo(() => {
-    const sorted = [...allItems].sort((a, b) =>
-      mode === "revenue" ? b.revenue - a.revenue :
-      mode === "qty"     ? b.qty - a.qty :
-                           b.visits - a.visits
-    )
+    const abcOf = (x: AbcItem): AbcClass =>
+      mode === "revenue" ? x.abcRevenue : mode === "qty" ? x.abcQty : x.abcVisits
+    const valOf = (x: AbcItem): number =>
+      mode === "revenue" ? x.revenue : mode === "qty" ? x.qty : x.visits
+
+    const sorted = [...allItems].sort((a, b) => {
+      // 1. sem dados vai pro fim sempre
+      if (a.noData !== b.noData) return a.noData ? 1 : -1
+      // 2. A antes de B antes de C
+      const abcDiff = ABC_ORDER[abcOf(a)] - ABC_ORDER[abcOf(b)]
+      if (abcDiff !== 0) return abcDiff
+      // 3. dentro do mesmo grupo: itens que precisam repor sobem
+      if (a.needsRestock !== b.needsRestock) return a.needsRestock ? -1 : 1
+      // 4. dentro do mesmo grupo: maior valor primeiro
+      return valOf(b) - valOf(a)
+    })
+
     if (showOnly === "estrela") return sorted.filter(x => x.isEstrela)
     if (showOnly === "repor")   return sorted.filter(x => x.needsRestock)
-    // No modo "all", itens que precisam repor sobem para o topo dentro do seu grupo ABC
-    return sorted.sort((a, b) => {
-      if (a.needsRestock === b.needsRestock) return 0
-      return a.needsRestock ? -1 : 1
-    })
+    return sorted
   }, [allItems, mode, showOnly])
 
   // ABC ativo por dimensão
