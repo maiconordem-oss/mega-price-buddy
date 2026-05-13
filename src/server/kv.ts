@@ -1,73 +1,69 @@
 'use server'
 
 import { createServerFn } from '@tanstack/react-start'
+import { supabaseAdmin } from '@/integrations/supabase/client.server'
 
-// ── Cloudflare KV binding ────────────────────────────────────────────────────
-// O binding "MEGALABS_KV" é declarado em wrangler.jsonc.
-// Em Workers, fica disponível via process.env.MEGALABS_KV (nodejs_compat) OU
-// via globalThis. Tentamos ambos para máxima compatibilidade.
+// ── Persistência server-side via Lovable Cloud (tabela user_storage) ────────
+// Substitui o Cloudflare KV. Chave isolada por userId/username + shopId + key.
+// Manipulada exclusivamente pelo servidor (admin client) — RLS bloqueia acesso direto.
 
-interface KVNamespace {
-  get(key: string, type?: 'text' | 'json'): Promise<string | null>
-  put(key: string, value: string, opts?: { expirationTtl?: number }): Promise<void>
-  delete(key: string): Promise<void>
-  list(opts?: { prefix?: string; limit?: number; cursor?: string }): Promise<{
-    keys: Array<{ name: string; expiration?: number; metadata?: unknown }>
-    list_complete: boolean
-    cursor?: string
-  }>
-}
-
-function getKV(): KVNamespace | null {
-  // Cloudflare Workers expõe o binding via process.env (com nodejs_compat)
-  // e também via globalThis
-  const fromEnv = (process.env as unknown as Record<string, KVNamespace | undefined>).MEGALABS_KV
-  if (fromEnv && typeof fromEnv.get === 'function') return fromEnv
-  const fromGlobal = (globalThis as unknown as Record<string, KVNamespace | undefined>).MEGALABS_KV
-  if (fromGlobal && typeof fromGlobal.get === 'function') return fromGlobal
-  return null
-}
-
-// Compõe chave isolada por conta: userId:shopId:key
 function buildKey(userId: string, shopId: string, key: string): string {
   const u = userId || 'anon'
   const s = shopId || 'default'
   return `${u}:${s}:${key}`
 }
 
+// userId aqui é tratado como "username" (chave lógica do usuário no app).
+// A coluna `username` da tabela recebe esse valor, e `key` recebe shopId:key
+// para manter o mesmo isolamento que o KV tinha.
+function splitForRow(userId: string, shopId: string, key: string) {
+  return {
+    username: userId || 'anon',
+    rowKey: `${shopId || 'default'}:${key}`,
+  }
+}
+
 // ── Save ─────────────────────────────────────────────────────────────────────
 export const kvSave = createServerFn({ method: 'POST' })
   .inputValidator((data: { userId: string; shopId: string; key: string; value: unknown; ttlSeconds?: number }) => data)
   .handler(async ({ data }) => {
-    const kv = getKV()
-    if (!kv) throw new Error('KV namespace MEGALABS_KV não está configurado')
-    const fullKey = buildKey(data.userId, data.shopId, data.key)
-    const payload = JSON.stringify({ data: data.value, ts: new Date().toISOString() })
-    await kv.put(fullKey, payload, data.ttlSeconds ? { expirationTtl: data.ttlSeconds } : undefined)
-    return { ok: true, key: fullKey }
+    const { username, rowKey } = splitForRow(data.userId, data.shopId, data.key)
+    const payload = { data: data.value, ts: new Date().toISOString() }
+    const { error } = await supabaseAdmin
+      .from('user_storage')
+      .upsert({ username, key: rowKey, value: payload, updated_at: new Date().toISOString() })
+    if (error) throw new Error(error.message)
+    return { ok: true, key: buildKey(data.userId, data.shopId, data.key) }
   })
 
 // ── Load ─────────────────────────────────────────────────────────────────────
-// Retorna o JSON serializado como string para evitar restrições de serialização
-// do TanStack Start. O cliente faz JSON.parse para recuperar { data, ts }.
+// Retorna JSON serializado como string (compat com a API anterior).
 export const kvLoad = createServerFn({ method: 'POST' })
   .inputValidator((data: { userId: string; shopId: string; key: string }) => data)
   .handler(async ({ data }): Promise<string | null> => {
-    const kv = getKV()
-    if (!kv) return null
-    const fullKey = buildKey(data.userId, data.shopId, data.key)
-    const raw = await kv.get(fullKey, 'text')
-    return raw ?? null
+    const { username, rowKey } = splitForRow(data.userId, data.shopId, data.key)
+    const { data: row, error } = await supabaseAdmin
+      .from('user_storage')
+      .select('value')
+      .eq('username', username)
+      .eq('key', rowKey)
+      .maybeSingle()
+    if (error) return null
+    if (!row) return null
+    return JSON.stringify(row.value)
   })
 
 // ── Delete ───────────────────────────────────────────────────────────────────
 export const kvDelete = createServerFn({ method: 'POST' })
   .inputValidator((data: { userId: string; shopId: string; key: string }) => data)
   .handler(async ({ data }) => {
-    const kv = getKV()
-    if (!kv) return { ok: false }
-    const fullKey = buildKey(data.userId, data.shopId, data.key)
-    await kv.delete(fullKey)
+    const { username, rowKey } = splitForRow(data.userId, data.shopId, data.key)
+    const { error } = await supabaseAdmin
+      .from('user_storage')
+      .delete()
+      .eq('username', username)
+      .eq('key', rowKey)
+    if (error) return { ok: false }
     return { ok: true }
   })
 
@@ -75,9 +71,14 @@ export const kvDelete = createServerFn({ method: 'POST' })
 export const kvList = createServerFn({ method: 'POST' })
   .inputValidator((data: { userId: string; shopId: string; prefix?: string }) => data)
   .handler(async ({ data }) => {
-    const kv = getKV()
-    if (!kv) return { keys: [] as string[] }
-    const prefix = `${data.userId || 'anon'}:${data.shopId || 'default'}:${data.prefix || ''}`
-    const res = await kv.list({ prefix, limit: 1000 })
-    return { keys: res.keys.map(k => k.name) }
+    const username = data.userId || 'anon'
+    const prefix = `${data.shopId || 'default'}:${data.prefix || ''}`
+    const { data: rows, error } = await supabaseAdmin
+      .from('user_storage')
+      .select('key')
+      .eq('username', username)
+      .like('key', `${prefix}%`)
+      .limit(1000)
+    if (error || !rows) return { keys: [] as string[] }
+    return { keys: rows.map(r => `${username}:${r.key}`) }
   })
