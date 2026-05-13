@@ -22,8 +22,9 @@ interface AbcItem {
   image:     string
   revenue:   number
   qty:       number
-  visits:    number
-  conversion: number        // qty / visits * 100
+  visits:    number     // escalado para o período (estimativa quando days < 90)
+  visits90d: number     // dado bruto da API (sempre 90 dias)
+  conversion: number    // qty / visits * 100
 
   // ABC por cada dimensão (calculado independentemente)
   abcRevenue: AbcClass
@@ -131,9 +132,16 @@ export function CurvaAbcTab() {
   const filteredOrders = useMemo(() => filterOrdersByDays(allOrders, days), [allOrders, days])
   const orderMap       = useMemo(() => buildOrderMap(filteredOrders), [filteredOrders])
 
+  // Fix bug 1: visitas são sempre 90d na API — avisa o usuário quando o período não bate
+  const isApproxVisits = days < 90
+
   // ── Classificação completa ────────────────────────────────────────────────
   const allItems = useMemo((): AbcItem[] => {
     const mlItems = products.filter(p => p.mlItemId)
+
+    // Visitas são sempre de 90 dias (limitação da API ML).
+    // Quando days < 90, escalamos proporcionalmente como estimativa.
+    const visitScale = days < 90 ? days / 90 : 1
 
     // Dados base
     const base = mlItems.map(p => ({
@@ -145,18 +153,27 @@ export function CurvaAbcTab() {
       status:    (p as any).status as string ?? 'active',
       revenue:   orderMap[p.mlItemId!]?.revenue || 0,
       qty:       orderMap[p.mlItemId!]?.qty || 0,
-      visits:    visitMap[p.mlItemId!] || 0,
+      // visits90d: dado bruto da API (sempre 90 dias)
+      visits90d: visitMap[p.mlItemId!] || 0,
+      // visits: escalado para o período selecionado (estimativa quando days < 90)
+      visits:    Math.round((visitMap[p.mlItemId!] || 0) * visitScale),
       conversion: (() => {
-        const v = visitMap[p.mlItemId!] || 0
-        const q = orderMap[p.mlItemId!]?.qty || 0
-        return v > 0 ? (q / v) * 100 : 0
+        const v90 = visitMap[p.mlItemId!] || 0
+        const q   = orderMap[p.mlItemId!]?.qty || 0
+        // Conversão = vendas do período / visitas estimadas do período
+        const vPeriod = Math.max(v90 * visitScale, 1)
+        return v90 > 0 ? (q / vPeriod) * 100 : 0
       })(),
     }))
 
-    // Separa: participam do cálculo ABC só os que tiveram alguma atividade
-    // Produtos sem nenhuma venda, visita E pausados ficam como "Sem dados"
-    const comDados    = base.filter(p => p.revenue > 0 || p.qty > 0 || p.visits > 0)
-    const semDados    = base.filter(p => p.revenue === 0 && p.qty === 0 && p.visits === 0)
+    // Fix bug 2: "tem dados" = teve vendas no período.
+    // Visitas de 90d não entram no critério quando days < 90 —
+    // não sabemos se as visitas foram no período selecionado ou antes.
+    const comDados = days === 90
+      ? base.filter(p => p.revenue > 0 || p.qty > 0 || p.visits90d > 0)
+      : base.filter(p => p.revenue > 0 || p.qty > 0)
+
+    const semDados = base.filter(p => !comDados.includes(p))
 
     const totalRevenue  = comDados.reduce((s, x) => s + x.revenue, 0)
     const avgConversion = (() => {
@@ -349,6 +366,19 @@ export function CurvaAbcTab() {
         <span><span className="font-medium text-orange-600">📦 Repor:</span> Vendeu no período mas está sem estoque — comprar agora</span>
       </div>
 
+      {/* Aviso de visitas aproximadas */}
+      {isApproxVisits && loaded && (
+        <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800 px-4 py-2.5 text-xs text-amber-800 dark:text-amber-300">
+          <span className="text-base leading-none mt-0.5">⚠️</span>
+          <span>
+            <span className="font-semibold">Visitas aproximadas:</span> a API do Mercado Livre retorna visitas acumuladas de 90 dias —
+            não é possível filtrar por período menor. Para o período de <span className="font-semibold">{days} dias</span>,
+            as visitas e a conversão são <span className="font-semibold">estimativas proporcionais</span> (÷ {Math.round(90 / days)}×).
+            Use <span className="font-semibold">90 dias</span> para dados exatos de visitas.
+          </span>
+        </div>
+      )}
+
       {/* ── Toolbar ──────────────────────────────────────────────────────── */}
       <div className="flex flex-wrap gap-2 items-center">
         <select className="h-9 rounded-md border bg-background px-3 text-sm" value={days}
@@ -473,16 +503,22 @@ export function CurvaAbcTab() {
                   <th className="text-left font-medium px-3 py-2.5">Curva</th>
                   <th className="text-left font-medium px-3 py-2.5">Produto</th>
                   <th className="text-right font-medium px-3 py-2.5 whitespace-nowrap">
-                    {modeLabel} ↓
+                    {modeLabel}{isApproxVisits && mode === "visits" && <span className="text-amber-500 ml-0.5" title="Estimativa proporcional de 90 dias">~</span>} ↓
                   </th>
                   <th className="text-right font-medium px-3 py-2.5 whitespace-nowrap">% Acum.</th>
                   {mode !== "revenue" && <th className="text-right font-medium px-3 py-2.5">Faturamento</th>}
                   {mode !== "qty"     && <th className="text-right font-medium px-3 py-2.5">Qtd</th>}
-                  {mode !== "visits"  && <th className="text-right font-medium px-3 py-2.5">Visitas</th>}
+                  {mode !== "visits"  && (
+                    <th className="text-right font-medium px-3 py-2.5 whitespace-nowrap">
+                      Visitas{isApproxVisits && <span className="text-amber-500 ml-0.5" title="Estimativa proporcional de 90 dias">~</span>}
+                    </th>
+                  )}
                   <th className="text-right font-medium px-3 py-2.5">Conversão</th>
                   <th className="text-right font-medium px-3 py-2.5">ABC Fat.</th>
                   <th className="text-right font-medium px-3 py-2.5">ABC Qtd</th>
-                  <th className="text-right font-medium px-3 py-2.5">ABC Visit.</th>
+                  <th className="text-right font-medium px-3 py-2.5 whitespace-nowrap">
+                    ABC Visit.{isApproxVisits && <span className="text-amber-500 ml-0.5" title="Estimativa proporcional — visitas sempre de 90 dias">~</span>}
+                  </th>
                   <th className="text-center font-medium px-3 py-2.5">⭐</th>
                 </tr>
               </thead>
@@ -616,7 +652,9 @@ export function CurvaAbcTab() {
                           item.conversion >= 3 ? "text-green-700 font-semibold" :
                           item.conversion >= 1 ? "text-yellow-700" : "text-muted-foreground"
                         }`}>
-                          {item.visits > 0 ? item.conversion.toFixed(1) + "%" : "—"}
+                          {item.visits90d > 0
+                            ? `${isApproxVisits ? "~" : ""}${item.conversion.toFixed(1)}%`
+                            : "—"}
                         </span>
                       </td>
 

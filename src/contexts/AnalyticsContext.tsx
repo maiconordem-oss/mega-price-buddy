@@ -278,7 +278,7 @@ export function AnalyticsProvider({ children }: { children: ReactNode }) {
       toast.loading('Buscando pedidos (90 dias)...', { id: 'analytics' })
       type RawOI    = { item: { id: string | number; title?: string }; quantity: number; unit_price: number }
       type RawOrder = { id: number; date_created: string; buyer: { nickname: string }; total_amount: number; status: string; order_items: RawOI[] }
-      const raw = await fetchAllOrders(userId, 'paid', dateFrom, 40) as RawOrder[]
+      const raw = await fetchAllOrders(userId, 'paid', dateFrom, 200) as RawOrder[]
 
       const newOrderMap: OrderData = {}
       const newAllOrders: Order[]  = raw.map(o => {
