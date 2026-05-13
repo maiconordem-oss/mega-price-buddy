@@ -144,12 +144,32 @@ export function CurvaAbcTab() {
       .filter(p => p.mlItemId)
       .filter(p => { if (seen.has(p.mlItemId!)) return false; seen.add(p.mlItemId!); return true })
 
+    // Safety net: produtos com pedidos em allOrders mas ausentes de products[]
+    // (produto pausado/fechado antes do cache atualizar, ou produto removido)
+    // Usamos o título do pedido como nome provisório.
+    const knownIds = new Set(mlItems.map(p => p.mlItemId!))
+    const ghostMap = new Map<string, string>() // mlItemId → título
+    for (const order of allOrders) {
+      for (const item of order.items) {
+        if (item.mlItemId && !knownIds.has(item.mlItemId) && item.title) {
+          if (!ghostMap.has(item.mlItemId)) ghostMap.set(item.mlItemId, item.title)
+        }
+      }
+    }
+    const ghostItems = Array.from(ghostMap.entries()).map(([id, title]) => ({
+      sku: id, name: title, mlItemId: id, image: '',
+      cost: 0, shipping: 0, fullCost: 0, stCost: 0, listings: [],
+      available_quantity: 0, status: 'paused',
+    } as unknown as typeof mlItems[0]))
+
+    const allMLItems = [...mlItems, ...ghostItems]
+
     // Visitas são sempre de 90 dias (limitação da API ML).
     // Quando days < 90, escalamos proporcionalmente como estimativa.
     const visitScale = days < 90 ? days / 90 : 1
 
     // Dados base
-    const base = mlItems.map(p => ({
+    const base = allMLItems.map(p => ({
       sku:       p.sku,
       name:      p.name,
       mlItemId:  p.mlItemId!,
@@ -237,7 +257,7 @@ export function CurvaAbcTab() {
       const { isEstrela, estrelScore } = calcularEstrela(p, avgConversion, totalRevenue)
       return { ...p, isEstrela, estrelScore, needsRestock: p.needsRestock ?? false }
     })
-  }, [products, orderMap, visitMap])
+  }, [products, orderMap, visitMap, allOrders, days])
 
   // Ordem numérica das classes ABC para ordenação
   const ABC_ORDER: Record<AbcClass, number> = { A: 0, B: 1, C: 2 }

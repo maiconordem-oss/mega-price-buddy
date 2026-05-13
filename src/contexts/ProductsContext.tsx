@@ -177,8 +177,21 @@ export function ProductsProvider({ children }: { children: ReactNode }) {
     try {
       if (!userId) return;
       const mlProds = await getMLProducts(userId);
-      setProductsState((prev) =>
-        prev.map((p) => {
+
+      // Carrega custos para mesclar nos produtos novos que não estavam no cache
+      let costsMap: Record<string, Partial<Product>> = {};
+      try {
+        const costsRaw = await serverLoad<Array<{ sku: string } & Partial<Product>>>("product-costs");
+        if (costsRaw?.data) {
+          (costsRaw.data as Array<{ sku: string } & Partial<Product>>).forEach(c => { costsMap[c.sku] = c; });
+        }
+      } catch {}
+
+      setProductsState((prev) => {
+        const prevIds = new Set(prev.map(p => p.mlItemId).filter(Boolean));
+
+        // Atualiza produtos existentes (preço, nome, imagem, tier)
+        const updated = prev.map((p) => {
           const fresh = mlProds.find((m) => m.mlItemId === p.mlItemId);
           if (!fresh) return p;
           return {
@@ -187,9 +200,23 @@ export function ProductsProvider({ children }: { children: ReactNode }) {
             listing_type_id: fresh.listing_type_id,
             name: fresh.name,
             image: fresh.image,
+            available_quantity: fresh.available_quantity,
+            status: (fresh as any).status,
           };
-        }),
-      );
+        });
+
+        // Adiciona produtos do ML que não estavam no cache
+        // (ex: produto pausado antes do cache ser criado, ou novo produto)
+        const newProds = mlProds
+          .filter(m => m.mlItemId && !prevIds.has(m.mlItemId))
+          .map(p => ({ ...p, fullCost: 0, stCost: 0, ...costsMap[p.sku] }));
+
+        if (!newProds.length) return updated;
+
+        const merged = [...updated, ...newProds];
+        serverSave(PRODUCTS_KEY, merged).catch(() => {}); // persiste cache atualizado
+        return merged;
+      });
     } catch {}
   };
 
