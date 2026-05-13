@@ -933,7 +933,7 @@ APENAS JSON, sem texto extra.`
               </Card>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <KwCard title="Variações semânticas" items={result.conteudo.variacoes_semanticas} copyId="var" copied={copied} onCopy={copy} />
+                <KwCard title="Variações semânticas" items={result.conteudo["variações_semanticas"]} copyId="var" copied={copied} onCopy={copy} />
                 <KwCard title="Atributos técnicos buscados" items={result.conteudo.atributos_tecnicos} copyId="attr" copied={copied} onCopy={copy} />
                 <KwCard title="Autocomplete (como buscam)" items={result.conteudo.autocomplete} copyId="auto" copied={copied} onCopy={copy} color="blue" />
                 <KwCard title="Termos negativos (evitar)" items={result.conteudo.termos_negativos} copyId="neg" copied={copied} onCopy={copy} color="red" />
