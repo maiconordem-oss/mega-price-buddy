@@ -206,7 +206,7 @@ export function PromocoesTab() {
               startDate:      o.start_date as string | undefined,
               endDate:        (o.finish_date || o.end_date) as string | undefined,
               deadlineDate:   o.deadline_date as string | undefined,
-              discountPct:    (o.discount_percentage || o.discount?.percentage) as number | undefined,
+              discountPct:    (o.discount_percentage || (o.discount as { percentage?: number } | undefined)?.percentage) as number | undefined,
               sellerPct:      o.seller_percentage as number | undefined,
               meliPct:        o.meli_percentage as number | undefined,
               minPrice:       o.min_discounted_price as number | undefined,
@@ -417,7 +417,7 @@ export function PromocoesTab() {
             image:        p.image,
             sku:          p.sku,
             currentPrice: price,
-            stock:        (p as Record<string, unknown>).available_quantity as number || 0,
+            stock:        (p as unknown as Record<string, unknown>).available_quantity as number || 0,
             listingType:  p.listing_type_id || "gold_special",
             promos,
           };
