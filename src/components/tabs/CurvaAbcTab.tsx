@@ -6,7 +6,7 @@ import { BRL } from "@/services/ml-api"
 import { useProducts } from "@/contexts/ProductsContext"
 import { useAnalytics, filterOrdersByDays, buildOrderMap } from "@/contexts/AnalyticsContext"
 import { useShopReset } from "@/hooks/useShopReset"
-import { Loader2, RefreshCw, Clock, Star, Copy, Check } from "lucide-react"
+import { Loader2, RefreshCw, Clock, Star, Copy, Check, PackageX } from "lucide-react"
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, ReferenceLine } from "recharts"
 import { toast } from "sonner"
 
@@ -39,6 +39,9 @@ interface AbcItem {
   isEstrela: boolean
   estrelScore: number       // 0-100
   noData?: boolean
+
+  // reposição: sem estoque mas vendeu no período
+  needsRestock: boolean
 }
 
 // ── Constantes ────────────────────────────────────────────────────────────────
@@ -113,7 +116,7 @@ export function CurvaAbcTab() {
   const { visitMap, allOrders, loading, loaded, lastFetch, load } = useAnalytics()
   const [days, setDays]   = useState(30)
   const [mode, setMode]   = useState<Mode>("revenue")
-  const [showOnly, setShowOnly] = useState<"all" | "estrela">("all")
+  const [showOnly, setShowOnly] = useState<"all" | "estrela" | "repor">("all")
   const [copied, setCopied] = useState<string | null>(null)
 
   const copyToClipboard = useCallback((text: string, label: string, key: string) => {
@@ -186,6 +189,8 @@ export function CurvaAbcTab() {
         pctAccRevenue: rr.pctAcc,
         pctAccQty:     rq.pctAcc,
         pctAccVisits:  rv.pctAcc,
+        // Vendeu no período mas está sem estoque → precisa repor
+        needsRestock: p.available_quantity === 0 && p.qty > 0,
       }
     })
 
@@ -199,6 +204,7 @@ export function CurvaAbcTab() {
       pctAccQty:     1,
       pctAccVisits:  1,
       noData: true,  // flag para UI diferenciar
+      needsRestock: false,
     }))
 
     // Combina: com dados primeiro (ordenados pelo ABC), sem dados por último
@@ -207,7 +213,7 @@ export function CurvaAbcTab() {
     // Calcular estrela (só produtos com dados)
     return all.map(p => {
       const { isEstrela, estrelScore } = calcularEstrela(p, avgConversion, totalRevenue)
-      return { ...p, isEstrela, estrelScore }
+      return { ...p, isEstrela, estrelScore, needsRestock: p.needsRestock ?? false }
     })
   }, [products, orderMap, visitMap])
 
@@ -218,7 +224,13 @@ export function CurvaAbcTab() {
       mode === "qty"     ? b.qty - a.qty :
                            b.visits - a.visits
     )
-    return showOnly === "estrela" ? sorted.filter(x => x.isEstrela) : sorted
+    if (showOnly === "estrela") return sorted.filter(x => x.isEstrela)
+    if (showOnly === "repor")   return sorted.filter(x => x.needsRestock)
+    // No modo "all", itens que precisam repor sobem para o topo dentro do seu grupo ABC
+    return sorted.sort((a, b) => {
+      if (a.needsRestock === b.needsRestock) return 0
+      return a.needsRestock ? -1 : 1
+    })
   }, [allItems, mode, showOnly])
 
   // ABC ativo por dimensão
@@ -243,6 +255,7 @@ export function CurvaAbcTab() {
     B: allItems.filter(x => !x.noData && getAbc(x) === "B").length,
     C: allItems.filter(x => !x.noData && getAbc(x) === "C").length,
     estrela: allItems.filter(x => x.isEstrela).length,
+    repor:   allItems.filter(x => x.needsRestock).length,
     semDados: allItems.filter(x => x.noData).length,
   }), [allItems, mode])
 
@@ -268,7 +281,7 @@ export function CurvaAbcTab() {
     <div className="space-y-5">
 
       {/* ── Cards de resumo ──────────────────────────────────────────────── */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
         {(["A", "B", "C"] as AbcClass[]).map(l => (
           <Card key={l} className="cursor-pointer" onClick={() => setShowOnly("all")}>
             <CardContent className="p-4 flex items-center gap-3">
@@ -298,6 +311,24 @@ export function CurvaAbcTab() {
           </CardContent>
         </Card>
 
+        {/* Repor Urgente */}
+        {counts.repor > 0 && (
+          <Card
+            className={`cursor-pointer transition-all border-2 ${showOnly === "repor" ? "border-orange-500" : "border-transparent"}`}
+            onClick={() => setShowOnly(v => v === "repor" ? "all" : "repor")}
+          >
+            <CardContent className="p-4 flex items-center gap-3">
+              <div className="h-10 w-10 rounded-xl flex items-center justify-center shrink-0 bg-orange-500">
+                <PackageX className="h-5 w-5 text-white" />
+              </div>
+              <div>
+                <div className="text-xs text-muted-foreground">Repor</div>
+                <div className="text-xl font-bold text-orange-600">{counts.repor}</div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Sem dados */}
         {counts.semDados > 0 && (
           <Card className="opacity-60">
@@ -312,11 +343,10 @@ export function CurvaAbcTab() {
         )}
       </div>
 
-      {/* Legenda estrela */}
-      <div className="text-xs text-muted-foreground bg-muted/40 rounded-lg px-4 py-2.5 flex flex-wrap gap-x-4 gap-y-1">
-        <span className="font-medium text-foreground">⭐ Produto Estrela:</span>
-        <span>Classe A em pelo menos 2 das 3 métricas</span>
-        <span>(faturamento, quantidade, visitas)</span>
+      {/* Legendas */}
+      <div className="text-xs text-muted-foreground bg-muted/40 rounded-lg px-4 py-2.5 flex flex-wrap gap-x-6 gap-y-1">
+        <span><span className="font-medium text-foreground">⭐ Produto Estrela:</span> Classe A em pelo menos 2 das 3 métricas (faturamento, quantidade, visitas)</span>
+        <span><span className="font-medium text-orange-600">📦 Repor:</span> Vendeu no período mas está sem estoque — comprar agora</span>
       </div>
 
       {/* ── Toolbar ──────────────────────────────────────────────────────── */}
@@ -338,6 +368,12 @@ export function CurvaAbcTab() {
         {showOnly === "estrela" && (
           <Badge className="bg-[#2D3277]/10 text-[#2D3277] border-0">
             ⭐ Filtrando Estrelas
+          </Badge>
+        )}
+
+        {showOnly === "repor" && (
+          <Badge className="bg-orange-100 text-orange-700 border-0">
+            📦 Filtrando: Repor Urgente
           </Badge>
         )}
 
@@ -424,7 +460,7 @@ export function CurvaAbcTab() {
         <Card>
           <CardHeader className="pb-2 flex-row items-center justify-between">
             <CardTitle className="text-sm">
-              {showOnly === "estrela" ? "⭐ Produtos Estrela" : `Curva ABC — ${modeLabel}`}
+              {showOnly === "estrela" ? "⭐ Produtos Estrela" : showOnly === "repor" ? "📦 Repor Urgente" : `Curva ABC — ${modeLabel}`}
               <span className="text-muted-foreground font-normal text-xs ml-2">
                 {tableItems.length} produtos · ordenado por {modeLabel.toLowerCase()}
               </span>
@@ -470,7 +506,11 @@ export function CurvaAbcTab() {
                   return (
                     <tr
                       key={item.mlItemId}
-                      className={`border-t hover:bg-muted/30 ${item.isEstrela ? "bg-[#E8EDFF]/30" : ""} ${isLastA || isLastB ? "border-b-2 border-dashed border-muted-foreground/30" : ""}`}
+                      className={`border-t hover:bg-muted/30
+                        ${item.needsRestock ? "bg-orange-50/60 dark:bg-orange-950/20" : item.isEstrela ? "bg-[#E8EDFF]/30" : ""}
+                        ${isLastA || isLastB ? "border-b-2 border-dashed border-muted-foreground/30" : ""}
+                      `}
+                      style={item.needsRestock ? { boxShadow: "inset 3px 0 0 #f97316" } : undefined}
                     >
                       {/* Curva ativa */}
                       <td className="px-3 py-2">
@@ -498,7 +538,13 @@ export function CurvaAbcTab() {
                             {/* Título */}
                             <div className="font-medium text-xs leading-snug line-clamp-2" title={item.name}>
                               {item.name}
-                              {(item as any).available_quantity === 0 && (
+                              {item.needsRestock && (
+                                <span className="ml-1.5 inline-flex items-center gap-0.5 px-1.5 py-0 rounded text-[9px] font-bold bg-orange-500 text-white">
+                                  <PackageX className="h-2.5 w-2.5" />
+                                  REPOR
+                                </span>
+                              )}
+                              {!item.needsRestock && (item as any).available_quantity === 0 && (
                                 <span className="ml-1.5 inline-flex items-center px-1 py-0 rounded text-[9px] font-bold bg-orange-100 text-orange-700">
                                   sem estoque
                                 </span>
@@ -611,6 +657,8 @@ export function CurvaAbcTab() {
                   <tr><td colSpan={11} className="px-3 py-10 text-center text-muted-foreground">
                     {showOnly === "estrela"
                       ? "Nenhum Produto Estrela encontrado. Os critérios exigem curva A em faturamento, A/B em quantidade e conversão acima da média."
+                      : showOnly === "repor"
+                      ? "Nenhum produto precisa de reposição no período selecionado. Ótimo — o estoque está em dia!"
                       : "Nenhum produto encontrado."}
                   </td></tr>
                 )}
