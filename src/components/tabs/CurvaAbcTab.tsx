@@ -115,7 +115,7 @@ function calcularEstrela(
 export function CurvaAbcTab() {
   const { products } = useProducts()
   const { visitMap, allOrders, loading, loaded, lastFetch, load } = useAnalytics()
-  const [days, setDays]   = useState(30)
+  const [days, setDays]   = useState(90)
   const [mode, setMode]   = useState<Mode>("revenue")
   const [showOnly, setShowOnly] = useState<"all" | "estrela" | "repor">("all")
   const [copied, setCopied] = useState<string | null>(null)
@@ -159,7 +159,7 @@ export function CurvaAbcTab() {
     const ghostItems = Array.from(ghostMap.entries()).map(([id, title]) => ({
       sku: id, name: title, mlItemId: id, image: '',
       cost: 0, shipping: 0, fullCost: 0, stCost: 0, listings: [],
-      available_quantity: 0, status: 'paused',
+      available_quantity: -1, status: 'paused', // -1 = estoque desconhecido, não dispara REPOR
     } as unknown as typeof mlItems[0]))
 
     const allMLItems = [...mlItems, ...ghostItems]
