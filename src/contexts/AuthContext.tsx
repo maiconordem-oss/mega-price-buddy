@@ -1,29 +1,30 @@
-import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react'
+import { createContext, useContext, useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
 import {
-  ml, setToken, setShopId, setUserId as setMLUserId, serverSave,
+  ml, setToken, setShopId, setUserId as setMLUserId, setLoginUser,
   exchangeCode, refreshToken as refreshMLToken, getAuthUrl,
+  sessionSave, sessionLoad,
 } from '@/services/ml-api'
 
 export interface Shop {
-  id: string           // ex: 'conta-1', 'conta-2'
-  name: string         // nome da conta (nickname do ML ou custom)
-  mlUserId?: string    // user_id do ML vinculado
-  mlNickname?: string  // nickname do ML vinculado
-  mlConnected: boolean // tem token ML válido salvo
+  id: string
+  name: string
+  mlUserId?: string
+  mlNickname?: string
+  mlConnected: boolean
+  // Tokens embutidos para persistir no servidor (KV)
+  mlAccessToken?: string
+  mlRefreshToken?: string
 }
 
 export interface MLUser { id: number; nickname: string; email?: string }
 
 interface Ctx {
-  // conta local ativa (login simples)
   user: string | null
-  // conta ML da shop ativa
   userId: string
   currentShop: Shop | null
   shops: Shop[]
   mlUser: MLUser | null
   mlConnected: boolean
-  // ações
   login: (username: string, password: string) => Promise<{ ok: boolean; error?: string }>
   logout: () => void
   switchShop: (shop: Shop) => void
@@ -32,16 +33,15 @@ interface Ctx {
   connectML: () => void
   handleMLCallback: (code: string) => Promise<void>
   disconnectML: () => void
-  // compat
   setCurrentShop: (shop: Shop) => void
 }
 
 const AuthContext = createContext<Ctx | null>(null)
 
 const LS = {
-  get:  (k: string) => { try { return localStorage.getItem(k) } catch { return null } },
-  set:  (k: string, v: string) => { try { localStorage.setItem(k, v) } catch {} },
-  del:  (k: string) => { try { localStorage.removeItem(k) } catch {} },
+  get: (k: string) => { try { return localStorage.getItem(k) } catch { return null } },
+  set: (k: string, v: string) => { try { localStorage.setItem(k, v) } catch {} },
+  del: (k: string) => { try { localStorage.removeItem(k) } catch {} },
 }
 
 // ── PKCE helpers ─────────────────────────────────────────────────────────────
@@ -66,122 +66,120 @@ interface Session {
   currentShopId: string | null
 }
 
-function loadSession(): Session | null {
+function loadLocalSession(): Session | null {
   const raw = LS.get(SESSION_KEY)
   if (!raw) return null
   try { return JSON.parse(raw) as Session } catch { return null }
 }
-
-function saveSession(s: Session) {
-  LS.set(SESSION_KEY, JSON.stringify(s))
-}
-
-// chaves de token por shop isoladas
-const tokenKey   = (shopId: string) => `ml-token-${shopId}`
-const refreshKey = (shopId: string) => `ml-refresh-${shopId}`
+function saveLocalSession(s: Session) { LS.set(SESSION_KEY, JSON.stringify(s)) }
 
 // ── Provider ──────────────────────────────────────────────────────────────────
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user,        setUser]    = useState<string | null>(null)
-  const [shops,       setShops]   = useState<Shop[]>([])
-  const [currentShop, setShopSt] = useState<Shop | null>(null)
-  const [mlUser,      setMlUser]  = useState<MLUser | null>(null)
+  const [user,        setUser]      = useState<string | null>(null)
+  const [shops,       setShops]     = useState<Shop[]>([])
+  const [currentShop, setShopSt]    = useState<Shop | null>(null)
+  const [mlUser,      setMlUser]    = useState<MLUser | null>(null)
   const [mlConnected, setConnected] = useState(false)
-  const [userId,      setUserId]  = useState('')
+  const [userId,      setUserId]    = useState('')
 
-  // ── tenta refresh de token de uma shop ────────────────────────────────────
-  const tryRefresh = useCallback(async (shopId: string): Promise<string | null> => {
-    const rt = LS.get(refreshKey(shopId))
-    if (!rt) return null
+  // ref para evitar loops de save no boot
+  const bootedRef = useRef(false)
+
+  // ── persiste sessão (local + servidor) ────────────────────────────────────
+  const persist = useCallback(async (u: string, allShops: Shop[], activeId: string | null) => {
+    const session: Session = { user: u, shops: allShops, currentShopId: activeId }
+    saveLocalSession(session)
+    try { await sessionSave(u, session) } catch {}
+  }, [])
+
+  // ── refresh de token ──────────────────────────────────────────────────────
+  const tryRefresh = useCallback(async (shop: Shop): Promise<string | null> => {
+    if (!shop.mlRefreshToken) return null
     try {
-      const t = await refreshMLToken(rt)
-      LS.set(tokenKey(shopId), t.access_token)
-      if (t.refresh_token) LS.set(refreshKey(shopId), t.refresh_token)
+      const t = await refreshMLToken(shop.mlRefreshToken)
       return t.access_token
     } catch { return null }
   }, [])
 
-  // ── ativa os dados de uma shop no estado global ────────────────────────────
-  const activateShop = useCallback(async (shop: Shop, allShops: Shop[]) => {
+  // ── ativa shop: aplica token, busca /users/me ─────────────────────────────
+  const activateShop = useCallback(async (shop: Shop, allShops: Shop[], currentUser: string) => {
     setShopSt(shop)
     setShopId(shop.id)
-    setMlUser(null)
-    setUserId('')
-    setMLUserId('')
-    setConnected(false)
-    setToken('')
+    setMlUser(null); setUserId(''); setMLUserId(''); setConnected(false); setToken('')
 
-    const tok = LS.get(tokenKey(shop.id))
-    if (!tok) return
+    if (!shop.mlAccessToken) return
 
-    // tenta usar token salvo
-    const tryToken = async (t: string) => {
+    const tryToken = async (t: string, refresh?: string) => {
       setToken(t)
       const u = await ml('/users/me') as MLUser
-      setMlUser(u)
-      setUserId(String(u.id))
-      setMLUserId(String(u.id))
-      setConnected(true)
+      setMlUser(u); setUserId(String(u.id)); setMLUserId(String(u.id)); setConnected(true)
 
-      // atualiza nickname na shop
       const updated = allShops.map(s =>
         s.id === shop.id
-          ? { ...s, mlUserId: String(u.id), mlNickname: u.nickname, mlConnected: true }
-          : s
+          ? { ...s, mlUserId: String(u.id), mlNickname: u.nickname, mlConnected: true,
+              mlAccessToken: t, mlRefreshToken: refresh ?? s.mlRefreshToken }
+          : s,
       )
       setShops(updated)
-      return updated
+      persist(currentUser, updated, shop.id)
     }
 
     try {
-      await tryToken(tok)
+      await tryToken(shop.mlAccessToken)
     } catch {
-      const nt = await tryRefresh(shop.id)
+      const nt = await tryRefresh(shop)
       if (nt) {
-        try { await tryToken(nt) } catch { LS.del(tokenKey(shop.id)) }
-      } else {
-        LS.del(tokenKey(shop.id))
+        try { await tryToken(nt) } catch {
+          // refresh falhou também — marca desconectado
+          const updated = allShops.map(s =>
+            s.id === shop.id ? { ...s, mlConnected: false, mlAccessToken: undefined } : s,
+          )
+          setShops(updated); persist(currentUser, updated, shop.id)
+        }
       }
     }
-  }, [tryRefresh])
+  }, [tryRefresh, persist])
 
-  // ── restaurar sessão no boot ──────────────────────────────────────────────
+  // ── restaurar sessão local no boot ────────────────────────────────────────
   useEffect(() => {
-    const s = loadSession()
+    if (bootedRef.current) return
+    bootedRef.current = true
+    const s = loadLocalSession()
     if (!s) return
-
     setUser(s.user)
+    setLoginUser(s.user)
     const savedShops = s.shops || []
     setShops(savedShops)
-
     const active = savedShops.find(x => x.id === s.currentShopId) || savedShops[0] || null
-    if (active) {
-      activateShop(active, savedShops)
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+    if (active) activateShop(active, savedShops, s.user)
+  }, [activateShop])
 
-  // ── persist helper ────────────────────────────────────────────────────────
-  const persist = useCallback((u: string, allShops: Shop[], activeId: string | null) => {
-    saveSession({ user: u, shops: allShops, currentShopId: activeId })
-  }, [])
-
-  // ── login simples ─────────────────────────────────────────────────────────
+  // ── login ─────────────────────────────────────────────────────────────────
   const login = useCallback(async (username: string, _pw: string): Promise<{ ok: boolean }> => {
-    const s = loadSession()
+    setLoginUser(username)
 
-    // recupera shops existentes ou cria a primeira
-    let savedShops: Shop[] = s?.shops || []
+    // 1) Tenta carregar sessão completa do servidor (KV)
+    let serverSession: Session | null = null
+    try {
+      serverSession = await sessionLoad<Session>(username)
+    } catch {}
+
+    // 2) Senão, fallback local
+    const local = loadLocalSession()
+    const base = serverSession || local
+
+    let savedShops: Shop[] = base?.shops || []
     if (!savedShops.length) {
       savedShops = [{ id: 'conta-1', name: 'Conta 1', mlConnected: false }]
     }
 
     setUser(username)
     setShops(savedShops)
-    persist(username, savedShops, savedShops[0]?.id || null)
+    await persist(username, savedShops, base?.currentShopId || savedShops[0]?.id || null)
 
-    const active = savedShops[0]
-    if (active) await activateShop(active, savedShops)
+    const activeId = base?.currentShopId || savedShops[0]?.id
+    const active = savedShops.find(s => s.id === activeId) || savedShops[0]
+    if (active) await activateShop(active, savedShops, username)
 
     return { ok: true }
   }, [activateShop, persist])
@@ -189,129 +187,103 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // ── logout ────────────────────────────────────────────────────────────────
   const logout = useCallback(() => {
     setUser(null); setUserId(''); setMlUser(null); setConnected(false)
-    setShopSt(null); setShops([]); setToken(''); setShopId(''); setMLUserId('')
+    setShopSt(null); setShops([])
+    setToken(''); setShopId(''); setMLUserId(''); setLoginUser('')
     LS.del(SESSION_KEY)
   }, [])
 
   // ── trocar de shop ────────────────────────────────────────────────────────
   const switchShop = useCallback((shop: Shop) => {
-    setShops(prev => {
-      persist(user!, prev, shop.id)
-      activateShop(shop, prev)
-      return prev
-    })
-  }, [user, activateShop, persist])
+    if (!user) return
+    persist(user, shops, shop.id)
+    activateShop(shop, shops, user)
+  }, [user, shops, activateShop, persist])
 
-  // compat alias
   const setCurrentShop = switchShop
 
-  // ── adicionar nova conta ──────────────────────────────────────────────────
+  // ── adicionar conta ───────────────────────────────────────────────────────
   const addShop = useCallback((name: string): Shop => {
-    const newId = `conta-${Date.now()}`
-    const newShop: Shop = { id: newId, name, mlConnected: false }
-    setShops(prev => {
-      const updated = [...prev, newShop]
-      persist(user!, updated, currentShop?.id || null)
-      return updated
-    })
+    const newShop: Shop = { id: `conta-${Date.now()}`, name, mlConnected: false }
+    const updated = [...shops, newShop]
+    setShops(updated)
+    if (user) persist(user, updated, currentShop?.id || null)
     return newShop
-  }, [user, currentShop, persist])
+  }, [shops, user, currentShop, persist])
 
   // ── remover conta ─────────────────────────────────────────────────────────
   const removeShop = useCallback((shopId: string) => {
-    // limpa tokens da conta removida
-    LS.del(tokenKey(shopId))
-    LS.del(refreshKey(shopId))
+    const updated = shops.filter(s => s.id !== shopId)
+    const nextActive = currentShop?.id === shopId ? updated[0] || null : currentShop
+    setShops(updated)
+    if (user) persist(user, updated, nextActive?.id || null)
+    if (currentShop?.id === shopId && nextActive && user) {
+      activateShop(nextActive, updated, user)
+    }
+  }, [shops, user, currentShop, activateShop, persist])
 
-    setShops(prev => {
-      const updated = prev.filter(s => s.id !== shopId)
-      const nextActive = currentShop?.id === shopId
-        ? updated[0] || null
-        : currentShop
-
-      persist(user!, updated, nextActive?.id || null)
-
-      if (currentShop?.id === shopId && nextActive) {
-        activateShop(nextActive, updated)
-      }
-
-      return updated
-    })
-  }, [user, currentShop, activateShop, persist])
-
-  // ── iniciar OAuth ML para a shop ativa ────────────────────────────────────
+  // ── iniciar OAuth ML ──────────────────────────────────────────────────────
   const connectML = useCallback(async () => {
     const verifier  = randStr(48)
     const challenge = await sha256b64url(verifier)
     LS.set('pkce-verifier', verifier)
     LS.set('pkce-shop-id', currentShop?.id || 'conta-1')
+    LS.set('pkce-login-user', user || '')
     const url = await getAuthUrl(challenge)
     window.location.href = url
-  }, [currentShop])
+  }, [currentShop, user])
 
-  // ── callback OAuth ML ─────────────────────────────────────────────────────
+  // ── callback OAuth ────────────────────────────────────────────────────────
   const handleMLCallback = useCallback(async (code: string) => {
     const verifier = LS.get('pkce-verifier')
     const shopId   = LS.get('pkce-shop-id') || currentShop?.id || 'conta-1'
+    const loginU   = LS.get('pkce-login-user') || user || ''
     if (!verifier) throw new Error('code_verifier não encontrado. Tente novamente.')
+    if (loginU) setLoginUser(loginU)
 
     const tokens = await exchangeCode(code, verifier)
-    LS.del('pkce-verifier')
-    LS.del('pkce-shop-id')
-
-    LS.set(tokenKey(shopId), tokens.access_token)
-    if (tokens.refresh_token) LS.set(refreshKey(shopId), tokens.refresh_token)
+    LS.del('pkce-verifier'); LS.del('pkce-shop-id'); LS.del('pkce-login-user')
 
     setToken(tokens.access_token)
     setShopId(shopId)
 
     const u = await ml('/users/me') as MLUser
-    setMlUser(u)
-    setUserId(String(u.id))
-    setMLUserId(String(u.id))
-    setConnected(true)
+    setMlUser(u); setUserId(String(u.id)); setMLUserId(String(u.id)); setConnected(true)
 
-    // atualiza a shop com os dados ML
-    setShops(prev => {
-      const updated = prev.map(s =>
-        s.id === shopId
-          ? { ...s, mlUserId: String(u.id), mlNickname: u.nickname, mlConnected: true, name: s.name }
-          : s
-      )
-      // se a shop não existia ainda (callback de nova conta), adiciona
-      const exists = updated.find(s => s.id === shopId)
-      const final  = exists ? updated : [...updated, { id: shopId, name: u.nickname, mlUserId: String(u.id), mlNickname: u.nickname, mlConnected: true }]
+    const baseShops = shops.length ? shops : (loadLocalSession()?.shops || [])
+    const exists = baseShops.find(s => s.id === shopId)
+    const updatedShop: Shop = {
+      id: shopId,
+      name: exists?.name || u.nickname,
+      mlUserId: String(u.id),
+      mlNickname: u.nickname,
+      mlConnected: true,
+      mlAccessToken: tokens.access_token,
+      mlRefreshToken: tokens.refresh_token || undefined,
+    }
+    const finalShops = exists
+      ? baseShops.map(s => s.id === shopId ? { ...s, ...updatedShop } : s)
+      : [...baseShops, updatedShop]
 
-      const active = final.find(s => s.id === shopId) || final[0]
-      setShopSt(active || null)
-      persist(user || u.nickname, final, shopId)
-      return final
-    })
+    setShops(finalShops)
+    setShopSt(finalShops.find(s => s.id === shopId) || null)
+    if (!user && loginU) setUser(loginU)
+    await persist(loginU || user || u.nickname, finalShops, shopId)
+  }, [shops, currentShop, user, persist])
 
-    await serverSave('ml-user', { id: u.id, nickname: u.nickname })
-  }, [currentShop, user, persist])
-
-  // ── desconectar ML da shop ativa ──────────────────────────────────────────
+  // ── desconectar ML ────────────────────────────────────────────────────────
   const disconnectML = useCallback(() => {
     const id = currentShop?.id
-    if (id) {
-      LS.del(tokenKey(id))
-      LS.del(refreshKey(id))
-    }
-    setToken('')
-    setMLUserId('')
-    setMlUser(null)
-    setUserId('')
-    setConnected(false)
-
-    setShops(prev => {
-      const updated = prev.map(s =>
-        s.id === id ? { ...s, mlConnected: false, mlUserId: undefined, mlNickname: undefined } : s
-      )
-      persist(user!, updated, id || null)
-      return updated
-    })
-  }, [currentShop, user, persist])
+    if (!id) return
+    setToken(''); setMLUserId(''); setMlUser(null); setUserId(''); setConnected(false)
+    const updated = shops.map(s =>
+      s.id === id
+        ? { ...s, mlConnected: false, mlUserId: undefined, mlNickname: undefined,
+            mlAccessToken: undefined, mlRefreshToken: undefined }
+        : s,
+    )
+    setShops(updated)
+    if (user) persist(user, updated, id)
+  }, [shops, currentShop, user, persist])
 
   return (
     <AuthContext.Provider value={{
