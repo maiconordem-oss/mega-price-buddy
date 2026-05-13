@@ -31,7 +31,7 @@ export const kvSave = createServerFn({ method: 'POST' })
     const payload = { data: data.value, ts: new Date().toISOString() }
     const { error } = await supabaseAdmin
       .from('user_storage')
-      .upsert({ username, key: rowKey, value: payload, updated_at: new Date().toISOString() })
+      .upsert({ username, key: rowKey, value: payload as never, updated_at: new Date().toISOString() })
     if (error) throw new Error(error.message)
     return { ok: true, key: buildKey(data.userId, data.shopId, data.key) }
   })
