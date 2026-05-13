@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { ChevronDown, ChevronRight, Package, TrendingUp, CheckCircle2, AlertTriangle, Loader2, Download, Search, Clock, Tag } from "lucide-react";
+import { ChevronDown, ChevronRight, Package, TrendingUp, CheckCircle2, AlertTriangle, Loader2, Download, Search, Clock, Tag, PackageX } from "lucide-react";
 import { useAutoRefresh } from "@/hooks/useAutoRefresh";
 import { useProducts } from "@/contexts/ProductsContext";
 import { useAuth } from "@/contexts/AuthContext";
@@ -42,7 +42,7 @@ export function PrecificacaoTab() {
   const shopId = currentShop?.id ?? "default";
   const [paramsOpen, setParamsOpen] = useState(false);
   const [search, setSearch] = useState("");
-  const [filterStatus, setFilterStatus] = useState<"" | "low" | "ok" | "nocost">("");
+  const [filterStatus, setFilterStatus] = useState<"" | "low" | "ok" | "nocost" | "nostock">("");
   const [updatingIds, setUpdatingIds] = useState<Set<string>>(new Set());
   const [expandedFuST, setExpandedFuST] = useState<Set<string>>(new Set());
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -83,9 +83,20 @@ export function PrecificacaoTab() {
         (p.mlItemId || "").toLowerCase().includes(q),
       );
     }
-    if (filterStatus === "low") list = list.filter(({ row }) => row.status === "low");
-    if (filterStatus === "ok") list = list.filter(({ row }) => row.status === "ok");
-    if (filterStatus === "nocost") list = list.filter(({ row }) => row.status === "nocost");
+    if (filterStatus === "low")     list = list.filter(({ row }) => row.status === "low");
+    if (filterStatus === "ok")      list = list.filter(({ row }) => row.status === "ok");
+    if (filterStatus === "nocost")  list = list.filter(({ row }) => row.status === "nocost");
+    if (filterStatus === "nostock") list = list.filter(({ product: p }) => p.available_quantity === 0);
+
+    // Sem estoque sempre sobe ao topo (exceto quando já filtrando por nostock)
+    if (filterStatus !== "nostock") {
+      list = [...list].sort((a, b) => {
+        const aNo = a.product.available_quantity === 0 ? 0 : 1;
+        const bNo = b.product.available_quantity === 0 ? 0 : 1;
+        return aNo - bNo;
+      });
+    }
+
     return list;
   }, [rows, search, filterStatus]);
 
@@ -101,11 +112,12 @@ export function PrecificacaoTab() {
   }, [filtered]);
 
   const stats = useMemo(() => {
-    let withCost = 0, low = 0, ok = 0;
-    rows.forEach(({ row }) => {
+    let withCost = 0, low = 0, ok = 0, noStock = 0;
+    rows.forEach(({ product: p, row }) => {
       if (row.status !== "nocost") { withCost++; row.status === "ok" ? ok++ : low++; }
+      if (p.available_quantity === 0) noStock++;
     });
-    return { total: products.length, withCost, low, ok };
+    return { total: products.length, withCost, low, ok, noStock };
   }, [rows, products]);
 
   const tier1Total = (getTierDeductions(params, 1) * 100).toFixed(2);
@@ -193,11 +205,17 @@ export function PrecificacaoTab() {
   return (
     <div className="space-y-4">
       {/* Stats */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <StatCard icon={<Package />} label="Anúncios ativos" value={stats.total.toString()} />
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+        <StatCard icon={<Package />} label="Anúncios" value={stats.total.toString()} />
         <StatCard icon={<TrendingUp />} label="Com custo" value={stats.withCost.toString()} />
-        <StatCard icon={<AlertTriangle />} label="Preço baixo" value={stats.low.toString()} tone="danger" />
-        <StatCard icon={<CheckCircle2 />} label="Margem ok" value={stats.ok.toString()} tone="success" />
+        <StatCard icon={<AlertTriangle />} label="Preço baixo" value={stats.low.toString()} tone="danger"
+          active={filterStatus === "low"} onClick={() => setFilterStatus(f => f === "low" ? "" : "low")} />
+        <StatCard icon={<CheckCircle2 />} label="Margem ok" value={stats.ok.toString()} tone="success"
+          active={filterStatus === "ok"} onClick={() => setFilterStatus(f => f === "ok" ? "" : "ok")} />
+        {stats.noStock > 0 && (
+          <StatCard icon={<PackageX />} label="Sem estoque" value={stats.noStock.toString()} tone="warning"
+            active={filterStatus === "nostock"} onClick={() => setFilterStatus(f => f === "nostock" ? "" : "nostock")} />
+        )}
       </div>
 
       {/* Params */}
@@ -284,6 +302,7 @@ export function PrecificacaoTab() {
         <select className="h-9 rounded-md border bg-background px-3 text-sm"
           value={filterStatus} onChange={(e) => setFilterStatus(e.target.value as typeof filterStatus)}>
           <option value="">Todos</option>
+          <option value="nostock">Sem estoque</option>
           <option value="low">Preço abaixo do ideal</option>
           <option value="ok">Margem adequada</option>
           <option value="nocost">Sem custo</option>
@@ -314,6 +333,7 @@ export function PrecificacaoTab() {
                 <th rowSpan={2} className="px-2 py-2 text-left w-9 border-b-2 border-[#2D3277]"></th>
                 <th rowSpan={2} className="px-2 py-2 text-left font-bold text-[#2D3277] border-b-2 border-[#2D3277] min-w-[150px]">Produto</th>
                 <th rowSpan={2} className="px-2 py-2 text-left font-bold text-[#2D3277] border-b-2 border-[#2D3277]">SKU</th>
+                <th rowSpan={2} className="px-2 py-2 text-center font-bold text-[#2D3277] border-b-2 border-[#2D3277]">Estoque</th>
                 <th rowSpan={2} className="px-2 py-2 text-left font-bold text-[#2D3277] border-b-2 border-[#2D3277]">Preço venda</th>
                 <th rowSpan={2} className="px-2 py-2 text-left font-bold text-[#2D3277] border-b-2 border-[#2D3277]">Custo</th>
                 <th rowSpan={2} className="px-2 py-2 text-left font-bold text-[#2D3277] border-b-2 border-[#2D3277]">Frete</th>
@@ -341,7 +361,7 @@ export function PrecificacaoTab() {
             </thead>
             <tbody>
               {filtered.length === 0 && (
-                <tr><td colSpan={14} className="px-3 py-12 text-center text-muted-foreground">
+                <tr><td colSpan={15} className="px-3 py-12 text-center text-muted-foreground">
                   {loadingProducts
                     ? <span className="flex items-center justify-center gap-2"><Loader2 className="h-4 w-4 animate-spin" />Carregando produtos do ML...</span>
                     : products.length === 0
@@ -363,7 +383,7 @@ export function PrecificacaoTab() {
                         ? <ChevronDown className="h-3.5 w-3.5 text-[#2D3277]" />
                         : <ChevronRight className="h-3.5 w-3.5 text-[#2D3277]" />}
                     </td>
-                    <td colSpan={13} className="px-2 py-1.5">
+                    <td colSpan={14} className="px-2 py-1.5">
                       <div className="flex items-center gap-2">
                         <span className="inline-block bg-[#2D3277] text-[#FFE600] text-[9px] font-black px-1.5 py-0.5 rounded">SKU</span>
                         <span className="font-bold text-[11px] text-[#2D3277]">{sku}</span>
@@ -396,8 +416,11 @@ export function PrecificacaoTab() {
                 const typeInfo = typeMap[listingType];
                 const showFuST = expandedFuST.has(p.sku);
 
+                const noStock = p.available_quantity === 0;
+
                 return (
-                  <tr key={p.sku} className="border-b hover:bg-gray-50 border-gray-100">
+                  <tr key={p.sku} className={`border-b border-gray-100 hover:bg-gray-50 ${noStock ? "bg-orange-50/50" : ""}`}
+                    style={noStock ? { boxShadow: "inset 3px 0 0 #f97316" } : undefined}>
                     {/* Foto */}
                     <td className="px-2 py-1.5">
                       <img src={p.image} alt={p.name} className="h-9 w-9 rounded object-cover bg-gray-100"
@@ -429,6 +452,21 @@ export function PrecificacaoTab() {
                           {p.sku}
                         </span>
                       ) : <span className="text-gray-300 text-[10px]">—</span>}
+                    </td>
+
+                    {/* Estoque */}
+                    <td className="px-2 py-1.5 text-center">
+                      {p.available_quantity === undefined || p.available_quantity === -1 ? (
+                        <span className="text-gray-300 text-[10px]">—</span>
+                      ) : noStock ? (
+                        <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-orange-500 text-white">
+                          <PackageX className="h-2.5 w-2.5" /> SEM
+                        </span>
+                      ) : (
+                        <span className={`font-mono font-bold text-[11px] ${p.available_quantity <= 3 ? "text-yellow-600" : "text-green-700"}`}>
+                          {p.available_quantity}
+                        </span>
+                      )}
                     </td>
 
                     {/* Preço venda */}
@@ -728,10 +766,19 @@ function MarginBadge({ margin, target }: { margin: number; target: number }) {
   return <span className="inline-block px-1.5 py-0.5 rounded text-[11px] font-semibold bg-red-100 text-red-700">{pct}</span>;
 }
 
-function StatCard({ icon, label, value, tone }: { icon: React.ReactNode; label: string; value: string; tone?: "success" | "danger" }) {
-  const cls = tone === "success" ? "bg-green-500/10 text-green-600" : tone === "danger" ? "bg-red-500/10 text-red-600" : "bg-primary/10 text-primary";
+function StatCard({ icon, label, value, tone, active, onClick }: {
+  icon: React.ReactNode; label: string; value: string;
+  tone?: "success" | "danger" | "warning";
+  active?: boolean;
+  onClick?: () => void;
+}) {
+  const cls = tone === "success" ? "bg-green-500/10 text-green-600"
+    : tone === "danger"  ? "bg-red-500/10 text-red-600"
+    : tone === "warning" ? "bg-orange-500/10 text-orange-600"
+    : "bg-primary/10 text-primary";
   return (
-    <Card>
+    <Card className={`${onClick ? "cursor-pointer transition-all" : ""} ${active ? "ring-2 ring-orange-400" : ""}`}
+      onClick={onClick}>
       <CardContent className="p-4 flex items-center gap-3">
         <div className={`h-10 w-10 rounded-xl flex items-center justify-center ${cls}`}>{icon}</div>
         <div>

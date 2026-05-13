@@ -26,6 +26,8 @@ export interface Product {
   // Configurações ML
   mlItemId?: string;
   listing_type_id?: string; // gold_pro, gold_special, etc
+  available_quantity?: number; // estoque atual (0 = sem estoque, -1 = não carregado)
+  status?: string;             // active, paused, closed
   // Preço promo manual
   promoPrice?: number;
   promoLocked?: boolean;
