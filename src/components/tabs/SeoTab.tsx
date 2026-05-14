@@ -7,7 +7,7 @@ import { useProducts } from "@/contexts/ProductsContext"
 import { useAuth } from "@/contexts/AuthContext"
 import { useShopReset } from "@/hooks/useShopReset"
 import { serverSave, serverLoad, BRL } from "@/services/ml-api"
-import { apifyRun, claudeAnalyze } from "@/server/ml-oauth"
+import { firecrawlScrape, claudeAnalyze } from "@/server/ml-oauth"
 import { toast } from "sonner"
 import {
   Search, Loader2, Star, TrendingUp, Zap, FileText,
@@ -194,7 +194,6 @@ export function SeoTab() {
   const shopId = currentShop?.id ?? "default"
   const mlProducts = products.filter(p => p.mlItemId)
 
-  const [apifyToken, setApifyToken] = useState(() => localStorage.getItem("apify-token") || "")
   const [claudeKey,  setClaudeKey]  = useState(() => localStorage.getItem("claude-api-key") || "")
   const [showKeys,   setShowKeys]   = useState(false)
 
@@ -217,7 +216,6 @@ export function SeoTab() {
     setSelectedId(""); setKeyword(""); setResult(null); setRawDebug(null)
   }, []))
 
-  const saveApify  = (v: string) => { setApifyToken(v); localStorage.setItem("apify-token", v) }
   const saveClaude = (v: string) => { setClaudeKey(v);  localStorage.setItem("claude-api-key", v) }
 
   const copy = (text: string, key: string) => {
@@ -266,7 +264,7 @@ export function SeoTab() {
 
   // ── Fluxo principal ───────────────────────────────────────────────────────
   const run = useCallback(async () => {
-    if (!apifyToken.trim()) { toast.error("Insira o token do Apify."); setShowKeys(true); return }
+    
     if (!claudeKey.trim())  { toast.error("Insira a API key da Anthropic."); setShowKeys(true); return }
     if (!selectedId)        { toast.error("Selecione um anúncio."); return }
     if (!keyword.trim())    { toast.error("Insira a keyword."); return }
@@ -276,8 +274,8 @@ export function SeoTab() {
 
     try {
       // ── STEP 1: Apify ─────────────────────────────────────────────────────
-      setStep(`Buscando ${pages * 60} concorrentes no Apify...`)
-      const rawText = await apifyRun({ data: { token: apifyToken.trim(), keyword: keyword.trim(), pages } })
+      setStep(`Buscando concorrentes no Mercado Livre...`)
+      const rawText = await firecrawlScrape({ data: { keyword: keyword.trim(), pages } })
 
       let rawItems: RawItem[]
       try { rawItems = JSON.parse(rawText) } catch {
@@ -384,7 +382,7 @@ ${JSON.stringify(analise, null, 2)}
 PRODUTO ATUAL:
 ${JSON.stringify(produtoAtual)}
 
-T�TULOS TOP 5 DOS CONCORRENTES:
+T�TULOS TOP 5 DOS CONCORRENTES:
 ${analise.padroes_titulo.titulos_top5.map((t,i) => `${i+1}. ${t}`).join("\n")}
 
 Gere conteúdo completo otimizado. Responda APENAS com JSON válido:
@@ -454,11 +452,11 @@ APENAS JSON, sem texto extra.`
     } finally {
       setLoading(false); setStep("")
     }
-  }, [apifyToken, claudeKey, selectedId, keyword, pages, selectedProduct, loadSavedList])
+  }, [claudeKey, selectedId, keyword, pages, selectedProduct, loadSavedList])
 
   // ── Helpers de render ─────────────────────────────────────────────────────
 
-  const hasCreds = apifyToken.trim() && claudeKey.trim()
+  const hasCreds = claudeKey.trim()
   const currentPrice = selectedProduct?.listings.find(l => l.channel === "ml")?.currentPrice || 0
 
   const DIFF_COLOR: Record<string, string> = {
@@ -498,19 +496,12 @@ APENAS JSON, sem texto extra.`
           <CardContent className="space-y-3 pt-0">
             <div>
               <label className="text-xs text-muted-foreground mb-1 block">
-                Token Apify
-                <a href="https://console.apify.com/account/integrations" target="_blank" rel="noreferrer" className="ml-2 text-blue-600 hover:underline">obter ↗</a>
-              </label>
-              <Input type="password" placeholder="apify_api_xxxxxxxxxxxx" value={apifyToken} onChange={e => saveApify(e.target.value)} className="font-mono text-sm" />
-            </div>
-            <div>
-              <label className="text-xs text-muted-foreground mb-1 block">
                 API Key Anthropic (Claude)
                 <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noreferrer" className="ml-2 text-blue-600 hover:underline">obter ↗</a>
               </label>
               <Input type="password" placeholder="sk-ant-xxxxxxxxxxxx" value={claudeKey} onChange={e => saveClaude(e.target.value)} className="font-mono text-sm" />
             </div>
-            <p className="text-xs text-muted-foreground">Chaves salvas no navegador. Usadas apenas para chamadas de API via servidor.</p>
+            <p className="text-xs text-muted-foreground">Chave salva no navegador. A integração Firecrawl é gerenciada pelo servidor automaticamente.</p>
           </CardContent>
         )}
       </Card>
@@ -573,7 +564,7 @@ APENAS JSON, sem texto extra.`
             <button className="flex items-center gap-2 text-xs text-muted-foreground" onClick={() => setRawDebug(null)}>
               ✕ Fechar debug
             </button>
-            <CardTitle className="text-xs text-muted-foreground">Estrutura do primeiro item Apify (debug)</CardTitle>
+            <CardTitle className="text-xs text-muted-foreground">Estrutura do primeiro item Firecrawl (debug)</CardTitle>
           </CardHeader>
           <CardContent>
             <pre className="text-xs bg-muted p-3 rounded overflow-auto max-h-40">{rawDebug}</pre>
@@ -605,7 +596,7 @@ APENAS JSON, sem texto extra.`
         <Card><CardContent className="py-12 text-center text-muted-foreground">
           <BarChart2 className="h-12 w-12 mx-auto mb-3 opacity-20" />
           <p className="font-medium">Selecione um anúncio e insira a keyword</p>
-          <p className="text-sm mt-1">O Apify busca os concorrentes e o Claude analisa os padrões de ranking em JSON estruturado.</p>
+          <p className="text-sm mt-1">O Firecrawl raspa os concorrentes do Mercado Livre e o Claude analisa os padrões de ranking em JSON estruturado.</p>
         </CardContent></Card>
       )}
 
@@ -630,7 +621,7 @@ APENAS JSON, sem texto extra.`
             </Button>
           </div>
 
-          {/* ── Tabela Apify ──────────────────────────────────────────────── */}
+          {/* ── Tabela Firecrawl ──────────────────────────────────────────────── */}
           <Card>
             <CardHeader className="pb-2">
               <button className="flex items-center gap-2 w-full text-left" onClick={() => setShowRaw(v => !v)}>
