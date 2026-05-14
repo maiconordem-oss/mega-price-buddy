@@ -199,7 +199,7 @@ export function SeoTab() {
 
   const [selectedId, setSelectedId] = useState("")
   const [keyword,    setKeyword]    = useState("")
-  const [pages,      setPages]      = useState(2)
+  const [pages]                     = useState(3) // fixo: 3 páginas Firecrawl ≈ 144, cortado em 100
 
   const [loading,    setLoading]    = useState(false)
   const [step,       setStep]       = useState("")
@@ -283,7 +283,10 @@ export function SeoTab() {
       }
 
       if (!Array.isArray(rawItems) || rawItems.length === 0)
-        throw new Error("Apify não retornou produtos. Verifique a keyword e tente novamente.")
+        throw new Error("Firecrawl não retornou produtos. Verifique a keyword e tente novamente.")
+
+      // Coleta os primeiros 100 anúncios para análise
+      rawItems = rawItems.slice(0, 100)
 
       // Salva debug do primeiro item para diagnóstico
       setRawDebug(JSON.stringify(rawItems[0], null, 2))
@@ -529,14 +532,10 @@ APENAS JSON, sem texto extra.`
               <Input placeholder="ex: tênis masculino branco" value={keyword} onChange={e => setKeyword(e.target.value)} onKeyDown={e => e.key === "Enter" && run()} />
             </div>
             <div>
-              <label className="text-xs text-muted-foreground mb-1 block">
-                Páginas (~{pages*60} resultados · ~${(pages*0.06).toFixed(2)})
-              </label>
-              <select className="w-full h-9 rounded-md border bg-background px-3 text-sm" value={pages} onChange={e => setPages(+e.target.value)}>
-                <option value={1}>1 página (~60)</option>
-                <option value={2}>2 páginas (~120)</option>
-                <option value={3}>3 páginas (~180)</option>
-              </select>
+              <label className="text-xs text-muted-foreground mb-1 block">Resultados</label>
+              <div className="h-9 flex items-center px-3 rounded-md border bg-muted/30 text-sm text-muted-foreground">
+                100 anúncios (Firecrawl + Claude)
+              </div>
             </div>
           </div>
 
