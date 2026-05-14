@@ -137,70 +137,124 @@ export const firecrawlScrape = createServerFn({ method: 'POST' })
     const keyword = data.keyword.trim().replace(/\s+/g, '-')
     const allProducts: Record<string, unknown>[] = []
 
+    const isBlockedMercadoLivrePage = (value: string) => {
+      const text = value.toLowerCase()
+      return (
+        text.includes('account-verification') ||
+        text.includes('micro-landing-container') ||
+        text.includes('account-verification-main') ||
+        text.includes('olá! para continuar, acesse') ||
+        text.includes('continue-button')
+      )
+    }
+
+    type FirecrawlResp = {
+      success: boolean
+      data?: {
+        html?: string
+        markdown?: string
+        metadata?: {
+          url?: string
+          title?: string
+          statusCode?: number
+          proxyUsed?: string
+        }
+        json?: { products?: Record<string, unknown>[] }
+        extract?: { products?: Record<string, unknown>[] }
+      }
+    }
+
     for (let page = 1; page <= data.pages; page++) {
       const offset = (page - 1) * 48
       const url = page === 1
         ? `https://lista.mercadolivre.com.br/${encodeURIComponent(keyword)}`
         : `https://lista.mercadolivre.com.br/${encodeURIComponent(keyword)}_Desde_${offset + 1}_NoIndex_True`
 
-      const res = await fetch('https://api.firecrawl.dev/v2/scrape', {
-        method:  'POST',
-        headers: {
-          'Content-Type':  'application/json',
-          'Authorization': `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          url,
-          onlyMainContent: false,
-          formats: [
-            {
-              type: 'json',
-              schema: {
-                type: 'object',
-                properties: {
-                  products: {
-                    type: 'array',
-                    description: 'Lista de produtos da página de busca do Mercado Livre',
-                    items: {
-                      type: 'object',
-                      properties: {
-                        title:          { type: 'string',  description: 'Título completo do anúncio' },
-                        price:          { type: 'number',  description: 'Preço atual em reais' },
-                        original_price: { type: 'number',  description: 'Preço anterior/riscado se houver' },
-                        url:            { type: 'string',  description: 'URL completa do anúncio' },
-                        rating:         { type: 'number',  description: 'Avaliação média de 0 a 5' },
-                        reviews_count:  { type: 'number',  description: 'Número total de avaliações' },
-                        is_sponsored:   { type: 'boolean', description: 'Se é anúncio patrocinado ou publicidade' },
-                        free_shipping:  { type: 'boolean', description: 'Se tem frete grátis' },
-                        condition:      { type: 'string',  description: 'Novo ou Usado' },
-                        brand:          { type: 'string',  description: 'Marca do produto se visível' },
+      let prods: Record<string, unknown>[] = []
+      let lastReason = 'sem resposta válida do Firecrawl'
+
+      for (let attempt = 1; attempt <= 4; attempt++) {
+        const res = await fetch('https://api.firecrawl.dev/v2/scrape', {
+          method:  'POST',
+          headers: {
+            'Content-Type':  'application/json',
+            'Authorization': `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify({
+            url,
+            onlyMainContent: false,
+            storeInCache: false,
+            proxy: 'enhanced',
+            location: { country: 'BR', languages: ['pt-BR'] },
+            formats: [
+              'html',
+              'markdown',
+              {
+                type: 'json',
+                schema: {
+                  type: 'object',
+                  properties: {
+                    products: {
+                      type: 'array',
+                      description: 'Lista de produtos da página de busca do Mercado Livre',
+                      items: {
+                        type: 'object',
+                        properties: {
+                          title:          { type: 'string',  description: 'Título completo do anúncio' },
+                          price:          { type: 'number',  description: 'Preço atual em reais' },
+                          original_price: { type: 'number',  description: 'Preço anterior/riscado se houver' },
+                          url:            { type: 'string',  description: 'URL completa do anúncio' },
+                          rating:         { type: 'number',  description: 'Avaliação média de 0 a 5' },
+                          reviews_count:  { type: 'number',  description: 'Número total de avaliações' },
+                          is_sponsored:   { type: 'boolean', description: 'Se é anúncio patrocinado ou publicidade' },
+                          free_shipping:  { type: 'boolean', description: 'Se tem frete grátis' },
+                          condition:      { type: 'string',  description: 'Novo ou Usado' },
+                          brand:          { type: 'string',  description: 'Marca do produto se visível' },
+                        },
+                        required: ['title', 'price', 'url'],
                       },
-                      required: ['title', 'price', 'url'],
                     },
                   },
+                  required: ['products'],
                 },
-                required: ['products'],
               },
-            },
-          ],
-        }),
-      })
+            ],
+          }),
+        })
 
-      if (!res.ok) {
-        const t = await res.text()
-        throw new Error(`Firecrawl HTTP ${res.status}: ${t.slice(0, 300)}`)
-      }
-
-      type FirecrawlResp = {
-        success: boolean
-        data?: {
-          json?: { products?: Record<string, unknown>[] }
-          extract?: { products?: Record<string, unknown>[] }
+        if (!res.ok) {
+          const t = await res.text()
+          lastReason = `Firecrawl HTTP ${res.status}: ${t.slice(0, 300)}`
+          continue
         }
+
+        const json = await res.json() as FirecrawlResp
+        const html = json.data?.html || ''
+        const markdown = json.data?.markdown || ''
+        const finalUrl = json.data?.metadata?.url || ''
+        const blocked = isBlockedMercadoLivrePage(html) || isBlockedMercadoLivrePage(markdown) || isBlockedMercadoLivrePage(finalUrl)
+        const extracted = json.data?.json?.products || json.data?.extract?.products || []
+
+        console.log(`[firecrawl] page ${page} attempt ${attempt}: ${extracted.length} produtos, blocked=${blocked}, proxy=${json.data?.metadata?.proxyUsed || 'unknown'}`)
+
+        if (blocked) {
+          lastReason = 'Mercado Livre exibiu tela de verificação/continuação para esta busca'
+          continue
+        }
+
+        if (extracted.length) {
+          prods = extracted
+          break
+        }
+
+        lastReason = 'Firecrawl carregou a página, mas não extraiu produtos nesta tentativa'
       }
-      const json = await res.json() as FirecrawlResp
-      const prods = json.data?.json?.products || json.data?.extract?.products || []
-      console.log(`[firecrawl] page ${page}: ${prods.length} produtos`)
+
+      if (!prods.length) {
+        console.warn(`[firecrawl] page ${page} sem produtos: ${lastReason}`)
+        if (allProducts.length > 0) break
+        throw new Error(`Firecrawl não retornou produtos. ${lastReason}. Tente novamente em instantes.`)
+      }
 
       prods.forEach((p, i) => {
         allProducts.push({
@@ -220,7 +274,7 @@ export const firecrawlScrape = createServerFn({ method: 'POST' })
       })
     }
 
-    if (!allProducts.length) throw new Error('Firecrawl não retornou produtos. Verifique a keyword e tente novamente.')
+    if (!allProducts.length) throw new Error('Firecrawl não retornou produtos. O Mercado Livre provavelmente bloqueou a raspagem nesta tentativa. Tente novamente em instantes.')
     return JSON.stringify(allProducts)
   })
 
