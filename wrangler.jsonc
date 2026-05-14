@@ -3,15 +3,5 @@
   "name": "tanstack-start-app",
   "compatibility_date": "2025-09-24",
   "compatibility_flags": ["nodejs_compat"],
-  "main": "@tanstack/react-start/server-entry",
-  "kv_namespaces": [
-    {
-      "binding": "MEGALABS_KV",
-      "id": "REPLACE_WITH_KV_NAMESPACE_ID",
-      "preview_id": "REPLACE_WITH_PREVIEW_KV_NAMESPACE_ID"
-    }
-  ],
-  "vars": {
-    "FIRECRAWL_API_KEY": ""
-  }
+  "main": "@tanstack/react-start/server-entry"
 }
